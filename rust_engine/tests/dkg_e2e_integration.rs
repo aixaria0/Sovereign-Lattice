@@ -1,5 +1,4 @@
 use bls12_381::{G1Projective, G2Projective, Scalar};
-use group::Group;
 use sovereign_lattice::dkg::DkgSession;
 use sovereign_lattice::pbft::PbftState;
 use sovereign_lattice::threshold_bls::{
