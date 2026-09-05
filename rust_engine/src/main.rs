@@ -3,9 +3,14 @@ use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use bls12_381::G2Projective;
+use tokio::time::{sleep, Duration};
+use bls12_381::{G2Projective, Scalar};
+use ff::Field;
+use group::Group;
 use sovereign_lattice::dkg::{DkgSession, DkgShareMessage};
-use sovereign_lattice::network::{spawn_outbound_broadcaster, start_tcp_listener};
+use sovereign_lattice::network::{
+    send_framed_message, spawn_outbound_broadcaster, start_tcp_listener, PACKET_TYPE_DKG,
+};
 use sovereign_lattice::pbft::{PbftMessage, PbftState};
 
 #[derive(Clone, Debug)]
@@ -52,53 +57,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.node_id, config.bind_addr
     );
 
-    let mut dkg_session = DkgSession::new(config.node_id, config.threshold, config.total_nodes);
-    let _my_commitments = dkg_session.generate_commitments();
-
-    let expected_participants: Vec<u32> = (0..config.total_nodes as u32).collect();
-
-    let mut peer_sessions = HashMap::new();
-    for &id in &expected_participants {
-        if id != config.node_id {
-            let peer_session = DkgSession::new(id, config.threshold, config.total_nodes);
-            peer_sessions.insert(id, peer_session);
-        }
-    }
-
-    for (&peer_id, peer_session) in &mut peer_sessions {
-        let peer_commitments = peer_session.generate_commitments();
-        let share_for_us = peer_session.evaluate_share_for(config.node_id);
-        dkg_session.process_incoming_share(peer_id, share_for_us, &peer_commitments)?;
-    }
-
-    let (my_secret_share, canonical_master_pk) = dkg_session.finalize_dkg(&expected_participants)?;
-    println!("🔑 [DKG SUCCESS]: Master threshold public key successfully synthesized.");
-
-    let mut public_keys = HashMap::new();
-    for &id in &expected_participants {
-        if id == config.node_id {
-            let my_signing_pk = G2Projective::generator() * my_secret_share;
-            public_keys.insert(id, my_signing_pk);
-        } else {
-            let mut peer_true_secret_share = dkg_session.evaluate_share_for(id);
-            for peer_session in peer_sessions.values() {
-                peer_true_secret_share += peer_session.evaluate_share_for(id);
-            }
-
-            let node_signing_pk = G2Projective::generator() * peer_true_secret_share;
-            public_keys.insert(id, node_signing_pk);
-        }
-    }
-
-    let pbft_state = PbftState::new(config.total_nodes, public_keys, canonical_master_pk)?;
-
-    let shared_state = Arc::new(Mutex::new(Some(pbft_state)));
-    let shared_sk = Arc::new(Mutex::new(Some(my_secret_share)));
-
-    println!("🛡️ [PBFT]: State machine locked! Validator registry uniquely populated.");
-
+    // Network event channels
     let (tx_broadcast, rx_broadcast) = mpsc::channel::<PbftMessage>(256);
-    let (tx_dkg, _rx_dkg) = mpsc::channel::<DkgShareMessage>(256);
+    let (tx_dkg, mut rx_dkg) = mpsc::channel::<DkgShareMessage>(256);
+
+    // Shared state locks (initially empty, waiting for DKG completion)
+    let shared_state: Arc<Mutex<Option<PbftState>>> = Arc::new(Mutex::new(None));
+    let shared_sk: Arc<Mutex<Option<Scalar>>> = Arc::new(Mutex::new(None));
 
     let broadcaster_handle = spawn_outbound_broadcaster(
         config.node_id,
@@ -109,14 +74,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener_node_id = config.node_id;
     let listener_bind_addr = config.bind_addr;
-    let listener_peer_map = config.peer_map;
+    let listener_peer_map = config.peer_map.clone();
     let listener_tx = tx_broadcast.clone();
+    let listener_tx_dkg = tx_dkg.clone();
     let listener_state = Arc::clone(&shared_state);
     let listener_sk = Arc::clone(&shared_sk);
-    let listener_tx_dkg = tx_dkg.clone();
 
     println!("🌐 [NETWORK]: Starting Tokio TCP transport listener daemon...");
-    let listener_handle = tokio::spawn(async move {
+    tokio::spawn(async move {
         if let Err(e) = start_tcp_listener(
             listener_bind_addr,
             listener_node_id,
@@ -132,8 +97,113 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let _ = tokio::join!(broadcaster_handle, listener_handle);
+    println!("⏳ [DKG PHASE 1]: Waiting 2 seconds for network mesh to stabilize...");
+    sleep(Duration::from_millis(2000)).await;
 
-    drop(tx_broadcast);
+    let mut dkg_session = DkgSession::new(config.node_id, config.threshold, config.total_nodes);
+    let my_commitments = dkg_session.generate_commitments();
+
+    println!("📡 [DKG PHASE 2]: Transmitting Feldman shares across TCP mesh...");
+    for (&peer_id, &peer_addr) in &config.peer_map {
+        if peer_id == config.node_id {
+            continue;
+        }
+
+        let share_for_peer = dkg_session.evaluate_share_for(peer_id);
+        let msg = DkgShareMessage {
+            from_node: config.node_id,
+            to_node: peer_id,
+            share: share_for_peer,
+            commitments: my_commitments.clone(),
+        };
+
+        let payload = msg.to_bytes();
+        let target_addr = peer_addr;
+        
+        // Spawn async transmission to prevent blocking
+        tokio::spawn(async move {
+            let mut attempts = 0;
+            while attempts < 10 {
+                if send_framed_message(target_addr, PACKET_TYPE_DKG, &payload).await.is_ok() {
+                    break;
+                }
+                sleep(Duration::from_millis(300)).await;
+                attempts += 1;
+            }
+        });
+    }
+
+    println!("📥 [DKG PHASE 3]: Ingesting authenticated inbound shares from network...");
+    let expected_inbound = config.total_nodes - 1;
+    let mut collected_peers = HashMap::new();
+
+    // Await incoming DKG packets from the listener channel
+    while collected_peers.len() < expected_inbound {
+        if let Some(msg) = rx_dkg.recv().await {
+            if msg.to_node == config.node_id && !collected_peers.contains_key(&msg.from_node) {
+                match dkg_session.process_incoming_share(msg.from_node, msg.share, &msg.commitments) {
+                    Ok(_) => {
+                        collected_peers.insert(msg.from_node, msg.commitments);
+                        println!(
+                            "   -> Verified Feldman share from Node {} ({}/{})",
+                            msg.from_node,
+                            collected_peers.len(),
+                            expected_inbound
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("REJECTED_DKG_SHARE from Node {}: {}", msg.from_node, e);
+                    }
+                }
+            }
+        }
+    }
+
+    let expected_participants: Vec<u32> = (0..config.total_nodes as u32).collect();
+    let (my_secret_share, canonical_master_pk) = dkg_session.finalize_dkg(&expected_participants)?;
+    println!("🔑 [DKG SUCCESS]: Master threshold public key successfully synthesized.");
+
+    let mut public_keys = HashMap::new();
+    for &id in &expected_participants {
+        let x = Scalar::from((id + 1) as u64);
+
+        let mut my_val = Scalar::zero();
+        let mut x_pow = Scalar::one();
+        for coeff in &dkg_session.secret_polynomial {
+            my_val += *coeff * x_pow;
+            x_pow *= x;
+        }
+        let mut sum_pk = G2Projective::generator() * my_val;
+
+        for (&peer_id, commits) in &collected_peers {
+            if peer_id == config.node_id { continue; }
+            let mut peer_eval = G2Projective::identity();
+            let mut p_pow = Scalar::one();
+            for c in commits {
+                peer_eval += *c * p_pow;
+                p_pow *= x;
+            }
+            sum_pk += peer_eval;
+        }
+        public_keys.insert(id, sum_pk);
+    }
+
+    let pbft_state = PbftState::new(config.total_nodes, public_keys, canonical_master_pk)?;
+
+    // Lock and inject state safely now that cryptography is verified
+    {
+        let mut state_guard = shared_state.lock().await;
+        *state_guard = Some(pbft_state);
+
+        let mut sk_guard = shared_sk.lock().await;
+        *sk_guard = Some(my_secret_share);
+    }
+
+    println!("🛡️ [PBFT]: State machine locked! Validator registry uniquely populated.");
+    println!("⚙️  Consensus engine is now live and waiting for blocks...");
+
+    // Keeps the main thread alive indefinitely for the broadcaster task
+    let _ = broadcaster_handle.await;
+
     Ok(())
 }
