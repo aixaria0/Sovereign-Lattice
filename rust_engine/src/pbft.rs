@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 
 pub static TEST_WAL_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-// 🔥 بای‌پاس تست پاک شد! الان تو محیط تست هم امضای واقعی BLS چک میشه
 fn check_sig(msg: &[u8], sig: &G1Projective, pk: &G2Projective) -> bool {
     verify_bls_signature(msg, sig, pk)
 }
@@ -483,7 +482,7 @@ impl PbftState {
 
                 self.pre_prepared_proposals.insert(proposal_key);
                 self.highest_seq = self.highest_seq.max(msg.seq);
-                format!("📥 [PRE-PREPARE]: Validated leader {} proposal for View {} Seq {}", msg.sender_id, msg.view, msg.seq)
+                format!("INBOUND_OK: PrePrepare Validated {} View {} Seq {}", msg.sender_id, msg.view, msg.seq)
             }
 
             Phase::Prepare => {
@@ -513,9 +512,9 @@ impl PbftState {
                     }
 
                     self.prepared_certificates.insert((msg.view, msg.seq), cert);
-                    format!("✅ [VERIFIED PREPARED CERTIFICATE]: Quorum achieved for View {} Seq {}.", msg.view, msg.seq)
+                    format!("CERTIFICATE_OK: Prepared Quorum achieved View {} Seq {}", msg.view, msg.seq)
                 } else {
-                    format!("⏳ [PREPARE VOTE]: Recorded from Node {}. Progress: {}/{}", msg.sender_id, sigs.len(), self.quorum_size)
+                    format!("VOTE_OK: Prepare Recorded Node {} Progress {}/{}", msg.sender_id, sigs.len(), self.quorum_size)
                 }
             }
 
@@ -559,9 +558,9 @@ impl PbftState {
 
                     self.commit_certificates.insert((msg.view, msg.seq), commit_cert);
                     self.committed_digest.insert((msg.view, msg.seq), msg.digest);
-                    format!("🏆 [COMMITTED WITH CERTIFICATE]: Sequence {} definitively committed under View {}.", msg.seq, msg.view)
+                    format!("COMMITTED_OK: Sequence {} definitively committed under View {}", msg.seq, msg.view)
                 } else {
-                    format!("⏳ [COMMIT VOTE]: Recorded from Node {}. Progress: {}/{}", msg.sender_id, sigs.len(), self.quorum_size)
+                    format!("VOTE_OK: Commit Recorded Node {} Progress {}/{}", msg.sender_id, sigs.len(), self.quorum_size)
                 }
             }
 
@@ -626,9 +625,9 @@ impl PbftState {
                     }
 
                     self.new_view_certificates.insert(msg.view, new_view_cert);
-                    format!("🔄 [STRICT QUORUM-SOURCED BOUND NEW VIEW CERTIFICATE]: Quorum reached for View {}. Inherited Seq: {}", msg.view, max_quorum_seq)
+                    format!("VIEW_CHANGE_OK: Quorum reached for View {} Inherited Seq {}", msg.view, max_quorum_seq)
                 } else {
-                    format!("🔄 [VIEW CHANGE VOTE]: Recorded for View {}. Progress: {}/{}", msg.view, supporters.len(), self.quorum_size)
+                    format!("VOTE_OK: View Change Recorded View {} Progress {}/{}", msg.view, supporters.len(), self.quorum_size)
                 }
             }
         };
@@ -659,7 +658,6 @@ mod adversarial_tests {
         (secret_keys, public_keys)
     }
 
-    // 🔥 تست‌ها حالا دارن از هش و امضای واقعی (sign_bls_message) استفاده می‌کنن!
     fn sign_message(msg: &[u8], sk: &Scalar) -> G1Projective {
         crate::threshold_bls::sign_bls_message(msg, sk)
     }
@@ -765,6 +763,8 @@ mod adversarial_tests {
             sender_id: 0,
             signature: sign_message(&canonical_commit, &secret_keys[&0]),
         };
+
+        state.current_view = commit_view;
 
         let result = state.handle_message(&commit_msg);
         assert!(result.is_err());
