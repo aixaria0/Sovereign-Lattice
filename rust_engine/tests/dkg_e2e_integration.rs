@@ -1,4 +1,5 @@
 use bls12_381::{G1Projective, G2Projective, Scalar};
+use group::Group;
 use sovereign_lattice::dkg::DkgSession;
 use sovereign_lattice::pbft::PbftState;
 use sovereign_lattice::threshold_bls::{
@@ -74,10 +75,10 @@ fn test_dkg_e2e_consensus_integration() {
         threshold_signatures.insert(id, sig);
     }
 
-    let is_valid_threshold_sig = verify_bound_threshold_signature(
+    let is_valid_threshold_sig = verify_threshold_signature(
         msg,
         &threshold_signatures,
-        &canonical_master_pk,
+        &public_keys,
         threshold,
     );
     assert!(
