@@ -1,0 +1,36 @@
+name: Sovereign-Lattice Cluster Smoke Test
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  e2e-consensus-test:
+    name: Run 4-Node PBFT Cluster
+    runs-on: ubuntu-latest
+
+    # چون کل کدهات تو این پوشه‌ست، میگیم گیت‌هاب دیفالت بره اینجا
+    defaults:
+      run:
+        working-directory: ./rust_engine
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache (For faster builds)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./rust_engine
+
+      - name: Make smoke test executable
+        run: chmod +x scripts/smoke_test.sh
+
+      - name: Execute E2E Cluster Smoke Test
+        run: ./scripts/smoke_test.sh
+
