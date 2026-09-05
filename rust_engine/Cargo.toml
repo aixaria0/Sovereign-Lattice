@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-bls12_381 = { version = "0.8.0", features = ["hash-to-curve"] }
+bls12_381 = { version = "0.8.0", features = ["experimental"] }
 ff = "0.13"
 group = "0.13"
 rand = "0.8"
