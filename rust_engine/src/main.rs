@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use bls12_381::G2Projective;
-use sovereign_lattice::dkg::DkgSession;
+use sovereign_lattice::dkg::{DkgSession, DkgShareMessage};
 use sovereign_lattice::network::{spawn_outbound_broadcaster, start_tcp_listener};
 use sovereign_lattice::pbft::{PbftMessage, PbftState};
 
@@ -91,33 +91,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let pbft_state = PbftState::new(config.total_nodes, public_keys, canonical_master_pk)?;
-    let shared_state = Arc::new(Mutex::new(pbft_state));
+
+    let shared_state = Arc::new(Mutex::new(Some(pbft_state)));
+    let shared_sk = Arc::new(Mutex::new(Some(my_secret_share)));
+
     println!("🛡️ [PBFT]: State machine locked! Validator registry uniquely populated.");
 
-    let (tx, rx) = mpsc::channel::<PbftMessage>(256);
+    let (tx_broadcast, rx_broadcast) = mpsc::channel::<PbftMessage>(256);
+    let (tx_dkg, _rx_dkg) = mpsc::channel::<DkgShareMessage>(256);
 
     let broadcaster_handle = spawn_outbound_broadcaster(
         config.node_id,
         config.peer_map.clone(),
-        rx,
+        rx_broadcast,
     );
     println!("📡 [BROADCASTER]: Asynchronous outbound broadcast worker started.");
 
     let listener_node_id = config.node_id;
     let listener_bind_addr = config.bind_addr;
     let listener_peer_map = config.peer_map;
-    let listener_tx = tx.clone();
+    let listener_tx = tx_broadcast.clone();
     let listener_state = Arc::clone(&shared_state);
+    let listener_sk = Arc::clone(&shared_sk);
+    let listener_tx_dkg = tx_dkg.clone();
 
     println!("🌐 [NETWORK]: Starting Tokio TCP transport listener daemon...");
     let listener_handle = tokio::spawn(async move {
         if let Err(e) = start_tcp_listener(
             listener_bind_addr,
             listener_node_id,
-            my_secret_share,
+            listener_sk,
             listener_state,
             listener_peer_map,
             listener_tx,
+            listener_tx_dkg,
         )
         .await
         {
@@ -127,6 +134,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _ = tokio::join!(broadcaster_handle, listener_handle);
 
-    drop(tx);
+    drop(tx_broadcast);
     Ok(())
 }
