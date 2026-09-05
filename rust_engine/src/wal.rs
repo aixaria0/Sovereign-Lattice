@@ -1,4 +1,5 @@
 use bls12_381::{G1Affine, G1Projective};
+use group::Curve;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 
@@ -37,7 +38,6 @@ impl WriteAheadLog {
         self.file.write_all(&len)?;
         self.file.write_all(&buf)?;
         
-        // Enforce direct hardware sync to prevent fake durability
         self.file.sync_data()?;
         
         Ok(())
@@ -47,7 +47,6 @@ impl WriteAheadLog {
     where
         F: FnMut(u64, u64, u8, u32, [u8; 32], G1Projective),
     {
-        // Rewind to the beginning of the file to read past logs
         self.file.seek(io::SeekFrom::Start(0))?;
 
         loop {
@@ -62,7 +61,6 @@ impl WriteAheadLog {
             let mut buf = vec![0u8; len];
             self.file.read_exact(&mut buf)?;
 
-            // Record length must be exactly 101 bytes
             if len < 101 {
                 continue;
             }
@@ -84,7 +82,6 @@ impl WriteAheadLog {
             }
         }
         
-        // Move cursor back to the end for future appends
         self.file.seek(io::SeekFrom::End(0))?;
         Ok(())
     }
