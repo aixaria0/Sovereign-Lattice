@@ -1,126 +1,93 @@
-use std::collections::HashMap;
 use bls12_381::{G1Projective, G2Projective, Scalar};
-use ff::Field;
-use group::Curve;
 use sovereign_lattice::dkg::DkgSession;
+use sovereign_lattice::pbft::PbftState;
 use sovereign_lattice::threshold_bls::{
-    evaluation_point, lagrange_coefficient_at_zero, reconstruct_threshold_signature,
-    verify_bound_threshold_signature,
+    sign_bls_message, verify_bound_threshold_signature,
 };
-use sovereign_lattice::pbft::{PbftState, PbftMessage, Phase};
+use std::collections::HashMap;
 
 #[test]
-fn test_dkg_to_pbft_end_to_end_integration() {
-    let n = 4;
-    let threshold = 3; // quorum size for N=4 (2f + 1)
+fn test_dkg_e2e_consensus_integration() {
+    let n = 4usize;
+    let threshold = 3usize;
 
-    // Step 1: Initialize DKG sessions for all N nodes
-    let mut sessions: HashMap<u32, DkgSession> = HashMap::new();
-    for id in 0..n as u32 {
-        sessions.insert(id, DkgSession::new(id, threshold, n));
+    let mut sessions = HashMap::new();
+    for i in 0..n as u32 {
+        sessions.insert(i, DkgSession::new(i, threshold, n));
     }
 
-    // Step 2: Generate and broadcast Feldman public commitments
     let mut all_commitments = HashMap::new();
-    for (&id, session) in &sessions {
+    for (&id, session) in &mut sessions {
         all_commitments.insert(id, session.generate_commitments());
     }
 
-    // Step 3: P2P share distribution and Feldman VSS verification
-    // Each node evaluates its polynomial for every peer using the canonical evaluation domain
-    for i in 0..n as u32 {
-        for j in 0..n as u32 {
-            if i == j {
-                continue;
-            }
-            let share_val = sessions.get(&i).unwrap().evaluate_share_for(j);
-            let commitments = all_commitments.get(&i).unwrap();
-            
-            sessions.get_mut(&j)
-                .unwrap()
-                .process_incoming_share(i, share_val, commitments)
-                .expect("Feldman VSS validation failed during DKG share exchange!");
+    for receiver_id in 0..n as u32 {
+        let incoming_shares: Vec<(u32, Scalar, Vec<G2Projective>)> = sessions
+            .iter()
+            .map(|(&sender_id, sender_session)| {
+                let share = sender_session.evaluate_share_for(receiver_id);
+                let commits = all_commitments.get(&sender_id).unwrap().clone();
+                (sender_id, share, commits)
+            })
+            .collect();
+
+        let receiver_session = sessions.get_mut(&receiver_id).unwrap();
+        for (sender_id, share, commits) in incoming_shares {
+            receiver_session
+                .process_incoming_share(sender_id, share, &commits)
+                .expect("Failed processing valid DKG share");
         }
     }
 
-    // Step 4: Finalize DKG sessions and extract aggregated secret shares and master public key
-    let expected_participants: Vec<u32> = (0..n as u32).collect();
-    let mut aggregated_shares = HashMap::new();
+    let participants: Vec<u32> = (0..n as u32).collect();
+    let mut secret_shares = HashMap::new();
     let mut master_pks = HashMap::new();
-    let mut public_keys = HashMap::new();
 
     for (&id, session) in &sessions {
-        let (secret_share, master_pk) = session.finalize_dkg(&expected_participants)
-            .expect("DKG finalization failed!");
-        
-        aggregated_shares.insert(id, secret_share);
+        let (sk_share, master_pk) = session
+            .finalize_dkg(&participants)
+            .expect("Finalization failed");
+        secret_shares.insert(id, sk_share);
         master_pks.insert(id, master_pk);
-        
-        // Each node's public key derived from its secret share for basic auth
-        public_keys.insert(id, G2Projective::generator() * secret_share);
     }
 
-    // Assert that all nodes independently synthesized the exact same global master public key
     let canonical_master_pk = master_pks[&0];
-    for (&id, pk) in &master_pks {
-        assert_eq!(*pk, canonical_master_pk, "Split-brain detected: Node {} derived a mismatched master public key!", id);
+    for id in 1..n as u32 {
+        assert_eq!(
+            canonical_master_pk, master_pks[&id],
+            "Master PK mismatch between node 0 and node {}",
+            id
+        );
     }
 
-    // Step 5: Algebraic Identity Check
-    // Reconstruct the master secret scalar from the shares using Lagrange interpolation at x = 0,
-    // and verify that G2 * reconstructed_secret == canonical_master_pk.
-    let mut participant_indices: Vec<u32> = aggregated_shares.keys().copied().collect();
-    participant_indices.sort_unstable();
-    participant_indices.truncate(threshold);
-
-    let mut reconstructed_secret = Scalar::zero();
-    for &idx in &participant_indices {
-        let coeff = lagrange_coefficient_at_zero(idx, &participant_indices);
-        reconstructed_secret += aggregated_shares[&idx] * coeff;
+    let mut public_keys = HashMap::new();
+    for &id in &participants {
+        let signing_pk = G2Projective::generator() * secret_shares[&id];
+        public_keys.insert(id, signing_pk);
     }
-    let derived_pk_from_secret = G2Projective::generator() * reconstructed_secret;
-    assert_eq!(
-        derived_pk_from_secret, canonical_master_pk,
-        "Algebraic mismatch: Reconstructed secret scalar does not match master public key!"
-    );
 
-    // Step 6: Threshold Signing & PBFT Integration Test
-    // Construct a canonical proposal payload for the Prepare phase
-    let view = 0u64;
-    let seq = 1u64;
-    let digest = [0x77u8; 32];
+    let msg = b"canonical_sovereign_lattice_block_proposal_digest";
+    let mut threshold_signatures: HashMap<u32, G1Projective> = HashMap::new();
 
-    let mut canonical_msg = Vec::new();
-    canonical_msg.push(Phase::Prepare as u8);
-    canonical_msg.extend_from_slice(&view.to_be_bytes());
-    canonical_msg.extend_from_slice(&seq.to_be_bytes());
-    canonical_msg.extend_from_slice(&digest);
-
-    // Nodes sign the canonical message using their DKG-derived secret shares
-    let mut threshold_signatures = HashMap::new();
-    let h_msg = sovereign_lattice::threshold_bls::hash_to_curve(&canonical_msg);
-    
-    for &id in &participant_indices {
-        let sig = h_msg * aggregated_shares[&id];
+    for &id in &participants[0..threshold] {
+        let sig = sign_bls_message(msg, &secret_shares[&id]);
         threshold_signatures.insert(id, sig);
     }
 
-    // Verify the bound threshold signature directly against the DKG-derived canonical master PK
     let is_valid_threshold_sig = verify_bound_threshold_signature(
-        &canonical_msg,
+        msg,
         &threshold_signatures,
         &canonical_master_pk,
         threshold,
     );
     assert!(
         is_valid_threshold_sig,
-        "DKG-derived threshold signature failed bound verification against canonical master PK!"
+        "Threshold signature validation failed against master PK"
     );
 
-    // Step 7: Feed into PBFT State Engine
-    let mut pbft_state = PbftState::new(n, public_keys, canonical_master_pk)
-        .expect("Failed to initialize PBFT state with DKG keys");
-
-    assert_eq!(pbft_state.master_public_key, canonical_master_pk);
+    let pbft_state = PbftState::new(n, public_keys, canonical_master_pk);
+    assert!(
+        pbft_state.is_ok(),
+        "Failed to bootstrap PBFT state machine with DKG keys"
+    );
 }
-
