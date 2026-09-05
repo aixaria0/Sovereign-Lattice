@@ -3,7 +3,7 @@ use ff::Field;
 use group::Curve;
 use rand::rngs::OsRng;
 use std::collections::HashMap;
-use crate::threshold_bls::{sign_bls_message, verify_bls_signature};
+use crate::threshold_bls::verify_bls_signature;
 
 #[derive(Clone, Debug)]
 pub struct DkgShareMessage {
