@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Duration};
-use bls12_381::{G2Projective, Scalar};
+use bls12_381::{G2Projective, G1Projective, Scalar};
 use ff::Field;
 use group::Group;
 use sovereign_lattice::dkg::{DkgSession, DkgShareMessage};
@@ -12,6 +12,7 @@ use sovereign_lattice::network::{
     send_framed_message, spawn_outbound_broadcaster, start_tcp_listener, PACKET_TYPE_DKG,
 };
 use sovereign_lattice::pbft::{PbftMessage, PbftState};
+use sovereign_lattice::threshold_bls::sign_bls_message;
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -57,11 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.node_id, config.bind_addr
     );
 
-    // Network event channels
     let (tx_broadcast, rx_broadcast) = mpsc::channel::<PbftMessage>(256);
     let (tx_dkg, mut rx_dkg) = mpsc::channel::<DkgShareMessage>(256);
 
-    // Shared state locks (initially empty, waiting for DKG completion)
     let shared_state: Arc<Mutex<Option<PbftState>>> = Arc::new(Mutex::new(None));
     let shared_sk: Arc<Mutex<Option<Scalar>>> = Arc::new(Mutex::new(None));
 
@@ -102,25 +101,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut dkg_session = DkgSession::new(config.node_id, config.threshold, config.total_nodes);
     let my_commitments = dkg_session.generate_commitments();
+    let dealer_sk = dkg_session.dealer_secret_key();
 
-    println!("📡 [DKG PHASE 2]: Transmitting Feldman shares across TCP mesh...");
+    println!("📡 [DKG PHASE 2]: Transmitting Authenticated Feldman shares across TCP mesh...");
     for (&peer_id, &peer_addr) in &config.peer_map {
         if peer_id == config.node_id {
             continue;
         }
 
         let share_for_peer = dkg_session.evaluate_share_for(peer_id);
-        let msg = DkgShareMessage {
+        let mut msg = DkgShareMessage {
             from_node: config.node_id,
             to_node: peer_id,
             share: share_for_peer,
             commitments: my_commitments.clone(),
+            signature: G1Projective::identity(),
         };
+
+        msg.signature = sign_bls_message(&msg.canonical_bytes(), &dealer_sk);
 
         let payload = msg.to_bytes();
         let target_addr = peer_addr;
         
-        // Spawn async transmission to prevent blocking
         tokio::spawn(async move {
             let mut attempts = 0;
             while attempts < 10 {
@@ -137,15 +139,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let expected_inbound = config.total_nodes - 1;
     let mut collected_peers = HashMap::new();
 
-    // Await incoming DKG packets from the listener channel
     while collected_peers.len() < expected_inbound {
         if let Some(msg) = rx_dkg.recv().await {
             if msg.to_node == config.node_id && !collected_peers.contains_key(&msg.from_node) {
+                
+                if !msg.verify_signature() {
+                    eprintln!("🛑 REJECTED_DKG_SPOOF: Invalid cryptographic signature from Node {}", msg.from_node);
+                    continue;
+                }
+
                 match dkg_session.process_incoming_share(msg.from_node, msg.share, &msg.commitments) {
                     Ok(_) => {
                         collected_peers.insert(msg.from_node, msg.commitments);
                         println!(
-                            "   -> Verified Feldman share from Node {} ({}/{})",
+                            "   -> Verified authenticated Feldman share from Node {} ({}/{})",
                             msg.from_node,
                             collected_peers.len(),
                             expected_inbound
@@ -190,7 +197,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pbft_state = PbftState::new(config.total_nodes, public_keys, canonical_master_pk)?;
 
-    // Lock and inject state safely now that cryptography is verified
     {
         let mut state_guard = shared_state.lock().await;
         *state_guard = Some(pbft_state);
@@ -199,10 +205,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         *sk_guard = Some(my_secret_share);
     }
 
-    println!("🛡️ [PBFT]: State machine locked! Validator registry uniquely populated.");
+    println!("🛡️ [PBFT]: State machine locked! Validator registry securely populated.");
     println!("⚙️  Consensus engine is now live and waiting for blocks...");
 
-    // Keeps the main thread alive indefinitely for the broadcaster task
     let _ = broadcaster_handle.await;
 
     Ok(())
