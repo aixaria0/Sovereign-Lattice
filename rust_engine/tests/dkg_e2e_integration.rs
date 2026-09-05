@@ -2,7 +2,7 @@ use bls12_381::{G1Projective, G2Projective, Scalar};
 use sovereign_lattice::dkg::DkgSession;
 use sovereign_lattice::pbft::PbftState;
 use sovereign_lattice::threshold_bls::{
-    sign_bls_message, verify_bound_threshold_signature,
+    sign_bls_message, verify_threshold_signature,
 };
 use std::collections::HashMap;
 
