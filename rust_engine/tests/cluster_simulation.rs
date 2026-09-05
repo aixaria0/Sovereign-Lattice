@@ -1,8 +1,9 @@
 use bls12_381::{G1Projective, G2Projective, Scalar};
 use ff::Field;
+use group::Group;
 use rand::rngs::OsRng;
 use sovereign_lattice::pbft::PbftState;
-use sovereign_lattice::threshold_bls::hash_to_scalar;
+use sovereign_lattice::threshold_bls::hash_message_to_curve;
 use std::collections::HashMap;
 
 #[test]
@@ -25,9 +26,6 @@ fn test_cluster_simulation_basic() {
     assert!(state.is_ok());
 
     let msg = b"cluster_state_transition_probe";
-    let scalar_hash = hash_to_scalar(b"TEST_SUITE_DOMAIN", msg);
-    assert_ne!(scalar_hash, Scalar::zero());
-
-    let point = G1Projective::generator() * scalar_hash;
+    let point = hash_message_to_curve(msg);
     assert_ne!(point, G1Projective::identity());
 }
