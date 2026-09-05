@@ -1,8 +1,9 @@
-use bls12_381::{G2Affine, G2Projective, Scalar};
+use bls12_381::{G1Projective, G2Projective, Scalar};
 use ff::Field;
 use group::Curve;
 use rand::rngs::OsRng;
 use std::collections::HashMap;
+use crate::threshold_bls::{sign_bls_message, verify_bls_signature};
 
 #[derive(Clone, Debug)]
 pub struct DkgShareMessage {
@@ -10,57 +11,87 @@ pub struct DkgShareMessage {
     pub to_node: u32,
     pub share: Scalar,
     pub commitments: Vec<G2Projective>,
+    pub signature: G1Projective,
 }
 
 impl DkgShareMessage {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&self.from_node.to_be_bytes());
-        buf.extend_from_slice(&self.to_node.to_be_bytes());
-        buf.extend_from_slice(&self.share.to_bytes());
-
-        let num_commits = self.commitments.len() as u32;
-        buf.extend_from_slice(&num_commits.to_be_bytes());
-        for commit in &self.commitments {
-            buf.extend_from_slice(&commit.to_affine().to_compressed());
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&self.from_node.to_be_bytes());
+        bytes.extend_from_slice(&self.to_node.to_be_bytes());
+        bytes.extend_from_slice(&self.share.to_bytes());
+        for c in &self.commitments {
+            bytes.extend_from_slice(&c.to_affine().to_compressed());
         }
-        buf
+        bytes
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = self.canonical_bytes();
+        bytes.extend_from_slice(&self.signature.to_affine().to_compressed());
+        bytes
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
-        if bytes.len() < 4 + 4 + 32 + 4 {
-            return Err("BYTE_LENGTH_TOO_SHORT");
+        if bytes.len() < 8 + 32 + 48 {
+            return Err("DKG_PACKET_TOO_SHORT");
         }
         let from_node = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
         let to_node = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
+        
+        let mut share_bytes = [0u8; 32];
+        share_bytes.copy_from_slice(&bytes[8..40]);
+        
+        let share_opt = Scalar::from_bytes(&share_bytes);
+        let share = if bool::from(share_opt.is_some()) {
+            share_opt.unwrap()
+        } else {
+            return Err("INVALID_SHARE_SCALAR");
+        };
 
-        let mut s_bytes = [0u8; 32];
-        s_bytes.copy_from_slice(&bytes[8..40]);
-        let s_opt: Option<Scalar> = Scalar::from_bytes(&s_bytes).into();
-        let share = s_opt.ok_or("INVALID_SCALAR_BYTES")?;
-
-        let num_commits = u32::from_be_bytes(bytes[40..44].try_into().unwrap()) as usize;
-        let mut offset = 44;
-        let mut commitments = Vec::with_capacity(num_commits);
-
-        for _ in 0..num_commits {
-            if offset + 96 > bytes.len() {
-                return Err("COMMITMENT_BYTES_OUT_OF_BOUNDS");
-            }
+        let mut offset = 40;
+        let mut commitments = Vec::new();
+        
+        while offset + 96 <= bytes.len() - 48 {
             let mut c_bytes = [0u8; 96];
-            c_bytes.copy_from_slice(&bytes[offset..offset + 96]);
-            let aff_opt: Option<G2Affine> = G2Affine::from_compressed(&c_bytes).into();
-            let aff = aff_opt.ok_or("INVALID_G2_AFFINE_POINT")?;
-            commitments.push(G2Projective::from(aff));
+            c_bytes.copy_from_slice(&bytes[offset..offset+96]);
+            let c_opt = bls12_381::G2Affine::from_compressed(&c_bytes);
+            if bool::from(c_opt.is_some()) {
+                commitments.push(G2Projective::from(c_opt.unwrap()));
+            } else {
+                return Err("INVALID_G2_COMMITMENT");
+            }
             offset += 96;
         }
+
+        if bytes.len() - offset != 48 {
+            return Err("INVALID_DKG_PACKET_STRUCTURE");
+        }
+
+        let mut sig_bytes = [0u8; 48];
+        sig_bytes.copy_from_slice(&bytes[offset..offset+48]);
+        let sig_opt = bls12_381::G1Affine::from_compressed(&sig_bytes);
+        let signature = if bool::from(sig_opt.is_some()) {
+            G1Projective::from(sig_opt.unwrap())
+        } else {
+            return Err("INVALID_G1_SIGNATURE");
+        };
 
         Ok(Self {
             from_node,
             to_node,
             share,
             commitments,
+            signature,
         })
+    }
+    
+    pub fn verify_signature(&self) -> bool {
+        if self.commitments.is_empty() {
+            return false;
+        }
+        let dealer_pubkey = self.commitments[0];
+        verify_bls_signature(&self.canonical_bytes(), &self.signature, &dealer_pubkey)
     }
 }
 
@@ -69,17 +100,15 @@ pub struct DkgSession {
     pub threshold: usize,
     pub total_nodes: usize,
     pub secret_polynomial: Vec<Scalar>,
-    pub commitments: Vec<G2Projective>,
     pub received_shares: HashMap<u32, Scalar>,
     pub received_commitments: HashMap<u32, Vec<G2Projective>>,
 }
 
 impl DkgSession {
     pub fn new(node_id: u32, threshold: usize, total_nodes: usize) -> Self {
-        let mut rng = OsRng;
         let mut secret_polynomial = Vec::with_capacity(threshold);
         for _ in 0..threshold {
-            secret_polynomial.push(Scalar::random(&mut rng));
+            secret_polynomial.push(Scalar::random(&mut OsRng));
         }
 
         Self {
@@ -87,97 +116,81 @@ impl DkgSession {
             threshold,
             total_nodes,
             secret_polynomial,
-            commitments: Vec::new(),
             received_shares: HashMap::new(),
             received_commitments: HashMap::new(),
         }
     }
-
-    pub fn generate_commitments(&mut self) -> Vec<G2Projective> {
-        if self.commitments.is_empty() {
-            let g2 = G2Projective::generator();
-            self.commitments = self
-                .secret_polynomial
-                .iter()
-                .map(|coeff| g2 * coeff)
-                .collect();
-        }
-        self.commitments.clone()
+    
+    pub fn dealer_secret_key(&self) -> Scalar {
+        self.secret_polynomial[0]
     }
 
-    pub fn evaluate_share_for(&self, receiver_id: u32) -> Scalar {
-        let x = Scalar::from((receiver_id + 1) as u64);
-        let mut result = Scalar::zero();
+    pub fn generate_commitments(&self) -> Vec<G2Projective> {
+        self.secret_polynomial
+            .iter()
+            .map(|coeff| G2Projective::generator() * coeff)
+            .collect()
+    }
+
+    pub fn evaluate_share_for(&self, node_id: u32) -> Scalar {
+        let x = Scalar::from((node_id + 1) as u64);
+        let mut share = Scalar::zero();
         let mut x_pow = Scalar::one();
 
         for coeff in &self.secret_polynomial {
-            result += *coeff * x_pow;
-            x_pow *= x;
+            share += coeff * &x_pow;
+            x_pow *= &x;
         }
-        result
-    }
-
-    pub fn verify_share(
-        receiver_id: u32,
-        share: &Scalar,
-        commitments: &[G2Projective],
-    ) -> bool {
-        let x = Scalar::from((receiver_id + 1) as u64);
-        let lhs = G2Projective::generator() * share;
-
-        let mut rhs = G2Projective::identity();
-        let mut x_pow = Scalar::one();
-
-        for c in commitments {
-            rhs += *c * x_pow;
-            x_pow *= x;
-        }
-
-        lhs == rhs
+        share
     }
 
     pub fn process_incoming_share(
         &mut self,
-        sender_id: u32,
+        from_node: u32,
         share: Scalar,
         commitments: &[G2Projective],
     ) -> Result<(), &'static str> {
-        if !Self::verify_share(self.node_id, &share, commitments) {
-            return Err("INVALID_FELDMAN_COMMITMENT_SHARE");
+        if commitments.len() != self.threshold {
+            return Err("INVALID_COMMITMENTS_LENGTH");
         }
-        self.received_shares.insert(sender_id, share);
-        self.received_commitments.insert(sender_id, commitments.to_vec());
+
+        let x = Scalar::from((self.node_id + 1) as u64);
+        let mut expected_g2 = G2Projective::identity();
+        let mut x_pow = Scalar::one();
+
+        for c in commitments {
+            expected_g2 += c * &x_pow;
+            x_pow *= &x;
+        }
+
+        let actual_g2 = G2Projective::generator() * share;
+
+        if actual_g2 != expected_g2 {
+            return Err("FELDMAN_VSS_VERIFICATION_FAILED");
+        }
+
+        self.received_shares.insert(from_node, share);
+        self.received_commitments.insert(from_node, commitments.to_vec());
         Ok(())
     }
 
-    pub fn finalize_dkg(
-        &self,
-        participants: &[u32],
-    ) -> Result<(Scalar, G2Projective), &'static str> {
-        if self.received_shares.len() + 1 < self.threshold {
-            return Err("INSUFFICIENT_SHARES_FOR_FINALIZATION");
-        }
+    pub fn finalize_dkg(&self, expected_participants: &[u32]) -> Result<(Scalar, G2Projective), &'static str> {
+        let mut final_share = self.evaluate_share_for(self.node_id);
+        let mut master_pk = G2Projective::identity();
+        master_pk += self.generate_commitments()[0];
 
-        let mut total_share = self.evaluate_share_for(self.node_id);
-        for &id in participants {
-            if id == self.node_id {
+        for peer_id in expected_participants {
+            if *peer_id == self.node_id {
                 continue;
             }
-            if let Some(sh) = self.received_shares.get(&id) {
-                total_share += *sh;
-            }
+            
+            let share = self.received_shares.get(peer_id).ok_or("MISSING_SHARE_FROM_PEER")?;
+            let commits = self.received_commitments.get(peer_id).ok_or("MISSING_COMMITMENTS_FROM_PEER")?;
+            
+            final_share += share;
+            master_pk += commits[0];
         }
 
-        let mut master_pk = self.commitments[0];
-        for &id in participants {
-            if id == self.node_id {
-                continue;
-            }
-            if let Some(commits) = self.received_commitments.get(&id) {
-                master_pk += commits[0];
-            }
-        }
-
-        Ok((total_share, master_pk))
+        Ok((final_share, master_pk))
     }
 }
