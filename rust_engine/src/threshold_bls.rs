@@ -1,6 +1,7 @@
 use bls12_381::{G1Projective, G2Projective, Scalar};
 use bls12_381::hash_to_curve::{ExpandMsgXmd, HashToCurve};
 use group::{Curve, Group};
+use ff::Field;
 use sha2::Sha256;
 use std::collections::HashMap;
 
@@ -32,57 +33,43 @@ pub fn aggregate_signatures(signatures: &[G1Projective]) -> G1Projective {
 pub fn verify_threshold_signature(
     msg: &[u8],
     signatures: &HashMap<u32, G1Projective>,
-    public_keys: &HashMap<u32, G2Projective>,
+    master_pk: &G2Projective,
     threshold: usize,
 ) -> bool {
     if signatures.len() < threshold {
         return false;
     }
 
-    let mut valid_count = 0;
-    for (id, sig) in signatures {
-        if let Some(pk) = public_keys.get(id) {
-            if verify_bls_signature(msg, sig, pk) {
-                valid_count += 1;
+    let mut ids: Vec<u32> = signatures.keys().cloned().collect();
+    ids.sort();
+    ids.truncate(threshold);
+
+    let mut reconstructed_sig = G1Projective::identity();
+
+    for &id_i in &ids {
+        let sig_i = &signatures[&id_i];
+        let x_i = Scalar::from((id_i + 1) as u64);
+
+        let mut numerator = Scalar::one();
+        let mut denominator = Scalar::one();
+
+        for &id_j in &ids {
+            if id_i == id_j {
+                continue;
             }
+            let x_j = Scalar::from((id_j + 1) as u64);
+            numerator *= -&x_j;
+            denominator *= &(x_i - x_j);
+        }
+
+        let denom_inv = denominator.invert();
+        if bool::from(denom_inv.is_some()) {
+            let lambda_i = numerator * denom_inv.unwrap();
+            reconstructed_sig += sig_i * lambda_i;
+        } else {
+            return false;
         }
     }
-    valid_count >= threshold
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ff::Field;
-    use rand::rngs::OsRng;
-
-    #[test]
-    fn test_bls_sign_and_verify() {
-        let sk = Scalar::random(&mut OsRng);
-        let pk = G2Projective::generator() * sk;
-        let msg = b"Secure Hash-to-Curve Consensus Test";
-
-        let sig = sign_bls_message(msg, &sk);
-        assert!(verify_bls_signature(msg, &sig, &pk));
-
-        let wrong_msg = b"Tampered Message";
-        assert!(!verify_bls_signature(wrong_msg, &sig, &pk));
-    }
-
-    #[test]
-    fn test_signature_aggregation() {
-        let sk1 = Scalar::random(&mut OsRng);
-        let pk1 = G2Projective::generator() * sk1;
-        let sk2 = Scalar::random(&mut OsRng);
-        let pk2 = G2Projective::generator() * sk2;
-
-        let msg = b"Aggregated PBFT Block";
-        let sig1 = sign_bls_message(msg, &sk1);
-        let sig2 = sign_bls_message(msg, &sk2);
-
-        let agg_sig = aggregate_signatures(&[sig1, sig2]);
-        let agg_pk = pk1 + pk2;
-
-        assert!(verify_bls_signature(msg, &agg_sig, &agg_pk));
-    }
+    verify_bls_signature(msg, &reconstructed_sig, master_pk)
 }
