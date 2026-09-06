@@ -1,4 +1,5 @@
 use bls12_381::{G1Projective, G2Projective, Scalar};
+use group::Group;
 use sovereign_lattice::dkg::DkgSession;
 use sovereign_lattice::pbft::PbftState;
 use sovereign_lattice::threshold_bls::{
@@ -35,7 +36,7 @@ fn test_dkg_e2e_consensus_integration() {
         for (sender_id, share, commits) in incoming_shares {
             receiver_session
                 .process_incoming_share(sender_id, share, &commits)
-                .expect("Failed processing valid DKG share");
+                .expect("DKG_SHARE_PROCESS_FAILED");
         }
     }
 
@@ -46,7 +47,7 @@ fn test_dkg_e2e_consensus_integration() {
     for (&id, session) in &sessions {
         let (sk_share, master_pk) = session
             .finalize_dkg(&participants)
-            .expect("Finalization failed");
+            .expect("DKG_FINALIZATION_FAILED");
         secret_shares.insert(id, sk_share);
         master_pks.insert(id, master_pk);
     }
@@ -55,7 +56,7 @@ fn test_dkg_e2e_consensus_integration() {
     for id in 1..n as u32 {
         assert_eq!(
             canonical_master_pk, master_pks[&id],
-            "Master PK mismatch between node 0 and node {}",
+            "MASTER_PK_MISMATCH_NODE_{}",
             id
         );
     }
@@ -77,17 +78,11 @@ fn test_dkg_e2e_consensus_integration() {
     let is_valid_threshold_sig = verify_threshold_signature(
         msg,
         &threshold_signatures,
-        &public_keys,
+        &canonical_master_pk,
         threshold,
     );
-    assert!(
-        is_valid_threshold_sig,
-        "Threshold signature validation failed against master PK"
-    );
+    assert!(is_valid_threshold_sig, "THRESHOLD_SIG_INVALID");
 
     let pbft_state = PbftState::new(n, public_keys, canonical_master_pk);
-    assert!(
-        pbft_state.is_ok(),
-        "Failed to bootstrap PBFT state machine with DKG keys"
-    );
+    assert!(pbft_state.is_ok(), "PBFT_STATE_BOOTSTRAP_FAILED");
 }
