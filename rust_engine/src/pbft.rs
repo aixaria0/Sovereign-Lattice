@@ -292,7 +292,9 @@ impl PbftState {
             }
         }
 
-        let wal_path = if cfg!(test) {
+        let wal_path = if let Ok(custom_path) = std::env::var("WAL_PATH") {
+            custom_path
+        } else if cfg!(test) {
             let count = TEST_WAL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             format!("consensus_wal_test_{}_{:?}.log", count, std::thread::current().id())
         } else {
