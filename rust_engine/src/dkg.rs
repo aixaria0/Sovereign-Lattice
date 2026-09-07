@@ -2,8 +2,29 @@ use bls12_381::{G1Projective, G2Projective, Scalar};
 use ff::Field;
 use group::Curve;
 use rand::rngs::OsRng;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use crate::threshold_bls::verify_bls_signature;
+
+pub fn compute_commitment_transcript(commitments: &HashMap<u32, Vec<G2Projective>>) -> [u8; 32] {
+    let mut canonical_bytes = Vec::new();
+    let mut sorted_keys: Vec<u32> = commitments.keys().cloned().collect();
+    sorted_keys.sort();
+
+    for id in sorted_keys {
+        canonical_bytes.extend_from_slice(&id.to_be_bytes());
+        if let Some(comm_list) = commitments.get(&id) {
+            for c in comm_list {
+                canonical_bytes.extend_from_slice(&c.to_affine().to_compressed());
+            }
+        }
+    }
+
+    let hash = Sha256::digest(&canonical_bytes);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hash[..32]);
+    out
+}
 
 #[derive(Clone, Debug)]
 pub struct DkgShareMessage {
@@ -171,6 +192,25 @@ impl DkgSession {
 
         self.received_shares.insert(from_node, share);
         self.received_commitments.insert(from_node, commitments.to_vec());
+        Ok(())
+    }
+
+    pub fn transcript_hash(&self) -> [u8; 32] {
+        let mut all = self.received_commitments.clone();
+        all.insert(self.node_id, self.generate_commitments());
+        compute_commitment_transcript(&all)
+    }
+
+    pub fn verify_transcript_consistency(
+        &self,
+        peer_hashes: &HashMap<u32, [u8; 32]>,
+    ) -> Result<(), &'static str> {
+        let my_hash = self.transcript_hash();
+        for (_, &hash) in peer_hashes {
+            if hash != my_hash {
+                return Err("TRANSCRIPT_EQUIVOCATION_DETECTED");
+            }
+        }
         Ok(())
     }
 
