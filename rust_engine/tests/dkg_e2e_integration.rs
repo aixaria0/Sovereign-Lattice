@@ -1,236 +1,136 @@
 use bls12_381::{G1Projective, G2Projective, Scalar};
-use ff::Field;
-use group::Curve;
-use rand::rngs::OsRng;
-use sha2::{Digest, Sha256};
+use sovereign_lattice::dkg::DkgSession;
+use sovereign_lattice::pbft::PbftState;
+use sovereign_lattice::threshold_bls::{
+    sign_bls_message, verify_threshold_signature,
+};
 use std::collections::HashMap;
-use crate::threshold_bls::verify_bls_signature;
 
-pub fn compute_commitment_transcript(commitments: &HashMap<u32, Vec<G2Projective>>) -> [u8; 32] {
-    let mut canonical_bytes = Vec::new();
-    let mut sorted_keys: Vec<u32> = commitments.keys().cloned().collect();
-    sorted_keys.sort();
+#[test]
+fn test_dkg_e2e_consensus_integration() {
+    let n = 4usize;
+    let threshold = 3usize;
 
-    for id in sorted_keys {
-        canonical_bytes.extend_from_slice(&id.to_be_bytes());
-        if let Some(comm_list) = commitments.get(&id) {
-            for c in comm_list {
-                canonical_bytes.extend_from_slice(&c.to_affine().to_compressed());
-            }
-        }
+    let mut sessions = HashMap::new();
+    for i in 0..n as u32 {
+        sessions.insert(i, DkgSession::new(i, threshold, n));
     }
 
-    let hash = Sha256::digest(&canonical_bytes);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&hash[..32]);
-    out
-}
-
-#[derive(Clone, Debug)]
-pub struct DkgShareMessage {
-    pub from_node: u32,
-    pub to_node: u32,
-    pub share: Scalar,
-    pub commitments: Vec<G2Projective>,
-    pub signature: G1Projective,
-}
-
-impl DkgShareMessage {
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&self.from_node.to_be_bytes());
-        bytes.extend_from_slice(&self.to_node.to_be_bytes());
-        bytes.extend_from_slice(&self.share.to_bytes());
-        for c in &self.commitments {
-            bytes.extend_from_slice(&c.to_affine().to_compressed());
-        }
-        bytes
+    let mut all_commitments = HashMap::new();
+    for (&id, session) in &mut sessions {
+        all_commitments.insert(id, session.generate_commitments());
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = self.canonical_bytes();
-        bytes.extend_from_slice(&self.signature.to_affine().to_compressed());
-        bytes
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
-        if bytes.len() < 8 + 32 + 48 {
-            return Err("DKG_PACKET_TOO_SHORT");
-        }
-        let from_node = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
-        let to_node = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
-        
-        let mut share_bytes = [0u8; 32];
-        share_bytes.copy_from_slice(&bytes[8..40]);
-        
-        let share_opt = Scalar::from_bytes(&share_bytes);
-        let share = if bool::from(share_opt.is_some()) {
-            share_opt.unwrap()
-        } else {
-            return Err("INVALID_SHARE_SCALAR");
-        };
-
-        let mut offset = 40;
-        let mut commitments = Vec::new();
-        
-        while offset + 96 <= bytes.len() - 48 {
-            let mut c_bytes = [0u8; 96];
-            c_bytes.copy_from_slice(&bytes[offset..offset+96]);
-            let c_opt = bls12_381::G2Affine::from_compressed(&c_bytes);
-            if bool::from(c_opt.is_some()) {
-                commitments.push(G2Projective::from(c_opt.unwrap()));
-            } else {
-                return Err("INVALID_G2_COMMITMENT");
-            }
-            offset += 96;
-        }
-
-        if bytes.len() - offset != 48 {
-            return Err("INVALID_DKG_PACKET_STRUCTURE");
-        }
-
-        let mut sig_bytes = [0u8; 48];
-        sig_bytes.copy_from_slice(&bytes[offset..offset+48]);
-        let sig_opt = bls12_381::G1Affine::from_compressed(&sig_bytes);
-        let signature = if bool::from(sig_opt.is_some()) {
-            G1Projective::from(sig_opt.unwrap())
-        } else {
-            return Err("INVALID_G1_SIGNATURE");
-        };
-
-        Ok(Self {
-            from_node,
-            to_node,
-            share,
-            commitments,
-            signature,
-        })
-    }
-    
-    pub fn verify_signature(&self) -> bool {
-        if self.commitments.is_empty() {
-            return false;
-        }
-        let dealer_pubkey = self.commitments[0];
-        verify_bls_signature(&self.canonical_bytes(), &self.signature, &dealer_pubkey)
-    }
-}
-
-pub struct DkgSession {
-    pub node_id: u32,
-    pub threshold: usize,
-    pub total_nodes: usize,
-    pub secret_polynomial: Vec<Scalar>,
-    pub received_shares: HashMap<u32, Scalar>,
-    pub received_commitments: HashMap<u32, Vec<G2Projective>>,
-}
-
-impl DkgSession {
-    pub fn new(node_id: u32, threshold: usize, total_nodes: usize) -> Self {
-        let mut secret_polynomial = Vec::with_capacity(threshold);
-        for _ in 0..threshold {
-            secret_polynomial.push(Scalar::random(&mut OsRng));
-        }
-
-        Self {
-            node_id,
-            threshold,
-            total_nodes,
-            secret_polynomial,
-            received_shares: HashMap::new(),
-            received_commitments: HashMap::new(),
-        }
-    }
-    
-    pub fn dealer_secret_key(&self) -> Scalar {
-        self.secret_polynomial[0]
-    }
-
-    pub fn generate_commitments(&self) -> Vec<G2Projective> {
-        self.secret_polynomial
+    for receiver_id in 0..n as u32 {
+        let incoming_shares: Vec<(u32, Scalar, Vec<G2Projective>)> = sessions
             .iter()
-            .map(|coeff| G2Projective::generator() * coeff)
-            .collect()
+            .map(|(&sender_id, sender_session)| {
+                let share = sender_session.evaluate_share_for(receiver_id);
+                let commits = all_commitments.get(&sender_id).unwrap().clone();
+                (sender_id, share, commits)
+            })
+            .collect();
+
+        let receiver_session = sessions.get_mut(&receiver_id).unwrap();
+        for (sender_id, share, commits) in incoming_shares {
+            receiver_session
+                .process_incoming_share(sender_id, share, &commits)
+                .expect("DKG_SHARE_PROCESS_FAILED");
+        }
     }
 
-    pub fn evaluate_share_for(&self, node_id: u32) -> Scalar {
-        let x = Scalar::from((node_id + 1) as u64);
-        let mut share = Scalar::zero();
-        let mut x_pow = Scalar::one();
-
-        for coeff in &self.secret_polynomial {
-            share += coeff * &x_pow;
-            x_pow *= &x;
-        }
-        share
+    let mut transcript_hashes = HashMap::new();
+    for (&id, session) in &sessions {
+        transcript_hashes.insert(id, session.transcript_hash());
     }
 
-    pub fn process_incoming_share(
-        &mut self,
-        from_node: u32,
-        share: Scalar,
-        commitments: &[G2Projective],
-    ) -> Result<(), &'static str> {
-        if commitments.len() != self.threshold {
-            return Err("INVALID_COMMITMENTS_LENGTH");
-        }
-
-        let x = Scalar::from((self.node_id + 1) as u64);
-        let mut expected_g2 = G2Projective::identity();
-        let mut x_pow = Scalar::one();
-
-        for c in commitments {
-            expected_g2 += c * &x_pow;
-            x_pow *= &x;
-        }
-
-        let actual_g2 = G2Projective::generator() * share;
-
-        if actual_g2 != expected_g2 {
-            return Err("FELDMAN_VSS_VERIFICATION_FAILED");
-        }
-
-        self.received_shares.insert(from_node, share);
-        self.received_commitments.insert(from_node, commitments.to_vec());
-        Ok(())
+    for (_, session) in &sessions {
+        assert!(
+            session.verify_transcript_consistency(&transcript_hashes).is_ok(),
+            "Honest nodes must agree on identical commitment transcript"
+        );
     }
 
-    pub fn transcript_hash(&self) -> [u8; 32] {
-        let mut all = self.received_commitments.clone();
-        all.insert(self.node_id, self.generate_commitments());
-        compute_commitment_transcript(&all)
+    let participants: Vec<u32> = (0..n as u32).collect();
+    let mut secret_shares = HashMap::new();
+    let mut master_pks = HashMap::new();
+
+    for (&id, session) in &sessions {
+        let (sk_share, master_pk) = session
+            .finalize_dkg(&participants)
+            .expect("DKG_FINALIZATION_FAILED");
+        secret_shares.insert(id, sk_share);
+        master_pks.insert(id, master_pk);
     }
 
-    pub fn verify_transcript_consistency(
-        &self,
-        peer_hashes: &HashMap<u32, [u8; 32]>,
-    ) -> Result<(), &'static str> {
-        let my_hash = self.transcript_hash();
-        for (_, &hash) in peer_hashes {
-            if hash != my_hash {
-                return Err("TRANSCRIPT_EQUIVOCATION_DETECTED");
-            }
-        }
-        Ok(())
+    let canonical_master_pk = master_pks[&0];
+    for id in 1..n as u32 {
+        assert_eq!(
+            canonical_master_pk, master_pks[&id],
+            "MASTER_PK_MISMATCH_NODE_{}",
+            id
+        );
     }
 
-    pub fn finalize_dkg(&self, expected_participants: &[u32]) -> Result<(Scalar, G2Projective), &'static str> {
-        let mut final_share = self.evaluate_share_for(self.node_id);
-        let mut master_pk = G2Projective::identity();
-        master_pk += self.generate_commitments()[0];
-
-        for peer_id in expected_participants {
-            if *peer_id == self.node_id {
-                continue;
-            }
-            
-            let share = self.received_shares.get(peer_id).ok_or("MISSING_SHARE_FROM_PEER")?;
-            let commits = self.received_commitments.get(peer_id).ok_or("MISSING_COMMITMENTS_FROM_PEER")?;
-            
-            final_share += share;
-            master_pk += commits[0];
-        }
-
-        Ok((final_share, master_pk))
+    let mut public_keys = HashMap::new();
+    for &id in &participants {
+        let signing_pk = G2Projective::generator() * secret_shares[&id];
+        public_keys.insert(id, signing_pk);
     }
+
+    let msg = b"canonical_sovereign_lattice_block_proposal_digest";
+    let mut threshold_signatures: HashMap<u32, G1Projective> = HashMap::new();
+
+    for &id in &participants[0..threshold] {
+        let sig = sign_bls_message(msg, &secret_shares[&id]);
+        threshold_signatures.insert(id, sig);
+    }
+
+    let is_valid_threshold_sig = verify_threshold_signature(
+        msg,
+        &threshold_signatures,
+        &canonical_master_pk,
+        threshold,
+    );
+    assert!(is_valid_threshold_sig, "THRESHOLD_SIG_INVALID");
+
+    let pbft_state = PbftState::new(n, public_keys, canonical_master_pk);
+    assert!(pbft_state.is_ok(), "PBFT_STATE_BOOTSTRAP_FAILED");
+}
+
+#[test]
+fn test_dkg_equivocating_dealer_detected() {
+    let n = 4usize;
+    let threshold = 3usize;
+
+    let mut session_honest = DkgSession::new(1, threshold, n);
+    let mut session_victim_a = DkgSession::new(2, threshold, n);
+    let mut session_victim_b = DkgSession::new(3, threshold, n);
+
+    let malicious_session_a = DkgSession::new(0, threshold, n);
+    let malicious_session_b = DkgSession::new(0, threshold, n);
+
+    let commits_a = malicious_session_a.generate_commitments();
+    let share_for_2 = malicious_session_a.evaluate_share_for(2);
+    session_victim_a.process_incoming_share(0, share_for_2, &commits_a).unwrap();
+
+    let commits_b = malicious_session_b.generate_commitments();
+    let share_for_3 = malicious_session_b.evaluate_share_for(3);
+    session_victim_b.process_incoming_share(0, share_for_3, &commits_b).unwrap();
+
+    let honest_commits = session_honest.generate_commitments();
+    session_victim_a.process_incoming_share(1, session_honest.evaluate_share_for(2), &honest_commits).unwrap();
+    session_victim_b.process_incoming_share(1, session_honest.evaluate_share_for(3), &honest_commits).unwrap();
+
+    let hash_a = session_victim_a.transcript_hash();
+    let hash_b = session_victim_b.transcript_hash();
+
+    assert_ne!(hash_a, hash_b, "Equivocating dealer must yield divergent transcript hashes");
+
+    let mut peer_hashes = HashMap::new();
+    peer_hashes.insert(3, hash_b);
+
+    let consistency_result = session_victim_a.verify_transcript_consistency(&peer_hashes);
+    assert!(consistency_result.is_err());
+    assert_eq!(consistency_result.unwrap_err(), "TRANSCRIPT_EQUIVOCATION_DETECTED");
 }
