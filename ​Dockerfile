@@ -1,0 +1,19 @@
+FROM rust:1.80-slim AS builder
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+COPY rust_engine /app/rust_engine
+WORKDIR /app/rust_engine
+RUN cargo build --release --bin sovereign_lattice
+
+FROM debian:bookworm-slim
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/rust_engine/target/release/sovereign_lattice /usr/local/bin/sovereign_lattice
+
+VOLUME ["/data"]
+ENTRYPOINT ["sovereign_lattice"]
+
