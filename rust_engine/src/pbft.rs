@@ -12,6 +12,7 @@ pub enum Phase {
     Prepare = 1,
     Commit = 2,
     ViewChange = 3,
+    Checkpoint = 4,
 }
 
 #[derive(Clone)]
@@ -45,6 +46,7 @@ impl PbftMessage {
             1 => Phase::Prepare,
             2 => Phase::Commit,
             3 => Phase::ViewChange,
+            4 => Phase::Checkpoint,
             _ => return Err("INVALID_PHASE"),
         };
         let mut view_bytes = [0u8; 8];
@@ -257,6 +259,7 @@ pub struct PbftState {
     pub f: usize,
     pub current_view: u64,
     pub highest_seq: u64,
+    pub last_stable_checkpoint: u64,
     pub prepared_certificates: HashMap<(u64, u64), PreparedCertificate>,
     pub commit_certificates: HashMap<(u64, u64), CommitCertificate>,
     pub new_view_certificates: HashMap<u64, NewViewCertificate>,
@@ -264,6 +267,7 @@ pub struct PbftState {
     pre_prepared_proposals: HashSet<(u64, u64, [u8; 32])>,
     prepare_votes: HashMap<(u64, u64, [u8; 32]), HashMap<u32, G1Projective>>,
     commit_votes: HashMap<(u64, u64, [u8; 32]), HashMap<u32, G1Projective>>,
+    pub checkpoint_votes: HashMap<(u64, [u8; 32]), HashMap<u32, G1Projective>>,
     pub view_change_votes: HashMap<u64, HashMap<u32, (u64, [u8; 32], G1Projective)>>,
     pub quorum_size: usize,
     registered_nodes: HashSet<u32>,
@@ -305,9 +309,11 @@ impl PbftState {
 
         let mut recovered_view = 0;
         let mut recovered_seq = 0;
+        let mut recovered_stable_checkpoint = 0;
         let mut recovered_proposals = HashSet::new();
         let mut recovered_prepare_votes: HashMap<(u64, u64, [u8; 32]), HashMap<u32, G1Projective>> = HashMap::new();
         let mut recovered_commit_votes: HashMap<(u64, u64, [u8; 32]), HashMap<u32, G1Projective>> = HashMap::new();
+        let mut recovered_checkpoint_votes: HashMap<(u64, [u8; 32]), HashMap<u32, G1Projective>> = HashMap::new();
         let mut recovered_view_change_votes: HashMap<u64, HashMap<u32, (u64, [u8; 32], G1Projective)>> = HashMap::new();
         let mut recovered_certificates = HashMap::new();
         let mut recovered_commit_certificates = HashMap::new();
@@ -345,15 +351,33 @@ impl PbftState {
                     let supporters = recovered_view_change_votes.entry(view).or_default();
                     supporters.insert(sender_id, (seq, digest, signature));
                 }
+                4 => {
+                    let supporters = recovered_checkpoint_votes.entry((seq, digest)).or_default();
+                    supporters.insert(sender_id, signature);
+                    if supporters.len() >= quorum_size && seq > recovered_stable_checkpoint {
+                        recovered_stable_checkpoint = seq;
+                    }
+                }
                 _ => {}
             }
         });
+
+        if recovered_stable_checkpoint > 0 {
+            recovered_proposals.retain(|&(_, s, _)| s > recovered_stable_checkpoint);
+            recovered_prepare_votes.retain(|&(_, s, _), _| s > recovered_stable_checkpoint);
+            recovered_commit_votes.retain(|&(_, s, _), _| s > recovered_stable_checkpoint);
+            recovered_certificates.retain(|&(_, s), _| s > recovered_stable_checkpoint);
+            recovered_commit_certificates.retain(|&(_, s), _| s > recovered_stable_checkpoint);
+            recovered_committed.retain(|&(_, s), _| s > recovered_stable_checkpoint);
+            recovered_checkpoint_votes.retain(|&(s, _), _| s > recovered_stable_checkpoint);
+        }
 
         Ok(Self {
             total_nodes,
             f,
             current_view: recovered_view,
             highest_seq: recovered_seq,
+            last_stable_checkpoint: recovered_stable_checkpoint,
             prepared_certificates: recovered_certificates,
             commit_certificates: recovered_commit_certificates,
             new_view_certificates: recovered_new_view_certificates,
@@ -361,6 +385,7 @@ impl PbftState {
             pre_prepared_proposals: recovered_proposals,
             prepare_votes: recovered_prepare_votes,
             commit_votes: recovered_commit_votes,
+            checkpoint_votes: recovered_checkpoint_votes,
             view_change_votes: recovered_view_change_votes,
             quorum_size,
             registered_nodes,
@@ -596,6 +621,32 @@ impl PbftState {
                     format!("VOTE_OK_VIEW_CHANGE")
                 }
             }
+
+            Phase::Checkpoint => {
+                if msg.seq <= self.last_stable_checkpoint {
+                    return Ok("CHECKPOINT_OBSOLETE".to_string());
+                }
+
+                let sigs = self.checkpoint_votes.entry((msg.seq, msg.digest)).or_default();
+                sigs.insert(msg.sender_id, msg.signature);
+
+                if sigs.len() >= self.quorum_size {
+                    self.last_stable_checkpoint = msg.seq;
+                    self.pre_prepared_proposals.retain(|&(_, s, _)| s > msg.seq);
+                    self.prepare_votes.retain(|&(_, s, _), _| s > msg.seq);
+                    self.commit_votes.retain(|&(_, s, _), _| s > msg.seq);
+                    self.prepared_certificates.retain(|&(_, s), _| s > msg.seq);
+                    self.commit_certificates.retain(|&(_, s), _| s > msg.seq);
+                    self.committed_digest.retain(|&(_, s), _| s > msg.seq);
+                    self.checkpoint_votes.retain(|&(s, _), _| s > msg.seq);
+
+                    let _ = self.wal.prune_before(msg.seq + 1);
+
+                    format!("CHECKPOINT_STABILIZED")
+                } else {
+                    format!("VOTE_OK_CHECKPOINT")
+                }
+            }
         };
 
         self.wal.append_entry(msg.view, msg.seq, msg.phase as u8, msg.sender_id, &msg.digest, &msg.signature)
@@ -720,5 +771,40 @@ mod adversarial_tests {
         let result = state.handle_message(&msg);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("ORPHAN_PREPARE"));
+    }
+
+    #[test]
+    fn test_checkpoint_and_wal_pruning() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+
+        let mut state = PbftState::new(n, public_keys.clone(), master_pk).expect("Failed init");
+
+        let seq_to_checkpoint: u64 = 5;
+        let digest = [0x55; 32];
+
+        for i in 0..threshold as u32 {
+            let mut canonical_chk = Vec::new();
+            canonical_chk.push(Phase::Checkpoint as u8);
+            canonical_chk.extend_from_slice(&state.current_view.to_be_bytes());
+            canonical_chk.extend_from_slice(&seq_to_checkpoint.to_be_bytes());
+            canonical_chk.extend_from_slice(&digest);
+
+            let msg = PbftMessage {
+                phase: Phase::Checkpoint,
+                view: state.current_view,
+                seq: seq_to_checkpoint,
+                digest,
+                sender_id: i,
+                signature: sign_bls_message(&canonical_chk, &secret_keys[&i]),
+            };
+
+            let res = state.handle_message(&msg);
+            assert!(res.is_ok());
+        }
+
+        assert_eq!(state.last_stable_checkpoint, seq_to_checkpoint);
+        assert!(state.checkpoint_votes.is_empty());
     }
 }
