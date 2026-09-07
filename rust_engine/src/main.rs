@@ -3,7 +3,7 @@ use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration, Instant};
 use bls12_381::{G2Projective, G1Projective, Scalar};
 use ff::Field;
 use group::Group;
@@ -21,6 +21,8 @@ pub struct NodeConfig {
     pub threshold: usize,
     pub bind_addr: SocketAddr,
     pub peer_map: HashMap<u32, SocketAddr>,
+    pub wal_path: String,
+    pub dkg_timeout_secs: u64,
 }
 
 impl NodeConfig {
@@ -31,6 +33,9 @@ impl NodeConfig {
 
         let bind_addr_str = env::var("BIND_ADDR").unwrap_or_else(|_| format!("127.0.0.1:{}", 8000 + node_id));
         let bind_addr: SocketAddr = bind_addr_str.parse()?;
+
+        let wal_path = env::var("WAL_PATH").unwrap_or_else(|_| format!("consensus_wal_node_{}.log", node_id));
+        let dkg_timeout_secs: u64 = env::var("DKG_TIMEOUT_SECS").unwrap_or_else(|_| "15".into()).parse()?;
 
         let mut peer_map = HashMap::new();
         for id in 0..total_nodes as u32 {
@@ -45,6 +50,8 @@ impl NodeConfig {
             threshold,
             bind_addr,
             peer_map,
+            wal_path,
+            dkg_timeout_secs,
         })
     }
 }
@@ -52,10 +59,11 @@ impl NodeConfig {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = NodeConfig::from_env()?;
+    env::set_var("WAL_PATH", &config.wal_path);
 
     println!(
-        "🚀 [BOOTSTRAP]: Initializing Sovereign-Lattice Node {} on {}...",
-        config.node_id, config.bind_addr
+        "🚀 [BOOTSTRAP]: Initializing Sovereign-Lattice Node {} on {} (WAL: {})...",
+        config.node_id, config.bind_addr, config.wal_path
     );
 
     let (tx_broadcast, rx_broadcast) = mpsc::channel::<PbftMessage>(256);
@@ -135,33 +143,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    println!("📥 [DKG PHASE 3]: Ingesting authenticated inbound shares from network...");
+    println!("📥 [DKG PHASE 3]: Ingesting authenticated shares (Deadline: {}s)...", config.dkg_timeout_secs);
     let expected_inbound = config.total_nodes - 1;
     let mut collected_peers = HashMap::new();
+    let deadline = Duration::from_secs(config.dkg_timeout_secs);
+    let start_time = Instant::now();
 
     while collected_peers.len() < expected_inbound {
-        if let Some(msg) = rx_dkg.recv().await {
-            if msg.to_node == config.node_id && !collected_peers.contains_key(&msg.from_node) {
-                
-                if !msg.verify_signature() {
-                    eprintln!("🛑 REJECTED_DKG_SPOOF: Invalid cryptographic signature from Node {}", msg.from_node);
-                    continue;
-                }
+        let elapsed = start_time.elapsed();
+        if elapsed >= deadline {
+            let missing_peers: Vec<u32> = (0..config.total_nodes as u32)
+                .filter(|&id| id != config.node_id && !collected_peers.contains_key(&id))
+                .collect();
+            return Err(format!(
+                "FATAL_DKG_TIMEOUT: Deadline reached. Missing shares from nodes: {:?}",
+                missing_peers
+            ).into());
+        }
 
-                match dkg_session.process_incoming_share(msg.from_node, msg.share, &msg.commitments) {
-                    Ok(_) => {
-                        collected_peers.insert(msg.from_node, msg.commitments);
-                        println!(
-                            "   -> Verified authenticated Feldman share from Node {} ({}/{})",
-                            msg.from_node,
-                            collected_peers.len(),
-                            expected_inbound
-                        );
+        let remaining = deadline - elapsed;
+        match timeout(remaining, rx_dkg.recv()).await {
+            Ok(Some(msg)) => {
+                if msg.to_node == config.node_id && !collected_peers.contains_key(&msg.from_node) {
+                    if !msg.verify_signature() {
+                        eprintln!("🛑 REJECTED_DKG_SPOOF: Invalid cryptographic signature from Node {}", msg.from_node);
+                        continue;
                     }
-                    Err(e) => {
-                        eprintln!("REJECTED_DKG_SHARE from Node {}: {}", msg.from_node, e);
+
+                    match dkg_session.process_incoming_share(msg.from_node, msg.share, &msg.commitments) {
+                        Ok(_) => {
+                            collected_peers.insert(msg.from_node, msg.commitments);
+                            println!(
+                                "   -> Verified authenticated Feldman share from Node {} ({}/{})",
+                                msg.from_node,
+                                collected_peers.len(),
+                                expected_inbound
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("REJECTED_DKG_SHARE from Node {}: {}", msg.from_node, e);
+                        }
                     }
                 }
+            }
+            Ok(None) => {
+                return Err("FATAL_DKG_CHANNEL_CLOSED: Inbound DKG stream terminated prematurely.".into());
+            }
+            Err(_) => {
+                let missing_peers: Vec<u32> = (0..config.total_nodes as u32)
+                    .filter(|&id| id != config.node_id && !collected_peers.contains_key(&id))
+                    .collect();
+                return Err(format!(
+                    "FATAL_DKG_TIMEOUT: Inbound share deadline expired. Missing nodes: {:?}",
+                    missing_peers
+                ).into());
             }
         }
     }
@@ -212,3 +247,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
