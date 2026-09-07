@@ -309,7 +309,7 @@ impl PbftState {
         let mut recovered_view_change_votes: HashMap<u64, HashMap<u32, (u64, [u8; 32], G1Projective)>> = HashMap::new();
         let mut recovered_certificates = HashMap::new();
         let mut recovered_commit_certificates = HashMap::new();
-        let recovered_new_view_certificates = HashMap::new(); // 🔥 اون mut اضافی رو اینجا برداشتم
+        let recovered_new_view_certificates = HashMap::new();
         let mut recovered_committed = HashMap::new();
 
         let _ = wal.replay_log(|view, seq, phase_u8, sender_id, digest, signature| {
@@ -372,7 +372,6 @@ impl PbftState {
         (view % self.total_nodes as u64) as u32
     }
 
-    // 🔥 تابع گمشده برگشت سر جاش!
     pub fn handle_view_change_payload(&mut self, payload: &ViewChangePayload) -> Result<(), &'static str> {
         if !self.registered_nodes.contains(&payload.sender_id) {
             return Err("UNAUTHORIZED_SENDER");
@@ -607,7 +606,7 @@ impl PbftState {
 #[cfg(test)]
 mod adversarial_tests {
     use super::*;
-    use bls12_381::{G1Projective, G2Projective, Scalar};
+    use bls12_381::{G2Projective, Scalar};
     use ff::Field;
     use rand::rngs::OsRng;
     use crate::threshold_bls::sign_bls_message;
@@ -697,8 +696,8 @@ mod adversarial_tests {
 
         let mut state = PbftState::new(n, public_keys.clone(), master_pk).expect("Failed init");
 
-        let view = 0;
-        let seq = 1;
+        let view: u64 = 0;
+        let seq: u64 = 1;
         let digest = [0xdd; 32];
 
         let mut canonical_prepare = Vec::new();
