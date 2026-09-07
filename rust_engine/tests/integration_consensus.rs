@@ -1,7 +1,7 @@
 use bls12_381::{G2Projective, Scalar};
+use ff::Field;
 use rand::rngs::OsRng;
 use sovereign_lattice::pbft::{PbftMessage, PbftState, Phase};
-use sovereign_lattice::threshold_bls::sign_bls_message;
 use std::collections::HashMap;
 
 fn generate_test_cluster(n: usize, threshold: usize) -> (HashMap<u32, Scalar>, HashMap<u32, G2Projective>, G2Projective) {
@@ -34,7 +34,7 @@ fn generate_test_cluster(n: usize, threshold: usize) -> (HashMap<u32, Scalar>, H
 fn test_full_consensus_lifecycle() {
     let n = 4;
     let threshold = 3;
-    let (secret_keys, public_keys, master_pk) = generate_test_cluster(n, threshold);
+    let (_secret_keys, public_keys, master_pk) = generate_test_cluster(n, threshold);
 
     let mut state = PbftState::new(n, public_keys, master_pk).expect("Failed to initialize state");
 
@@ -43,7 +43,7 @@ fn test_full_consensus_lifecycle() {
         view: 0,
         seq: 1,
         digest: [0xee; 32],
-        sender_id: 999, // Unregistered ID
+        sender_id: 999,
         signature: bls12_381::G1Projective::identity(),
     };
 
