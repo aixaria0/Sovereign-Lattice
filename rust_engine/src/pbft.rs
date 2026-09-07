@@ -309,7 +309,7 @@ impl PbftState {
         let mut recovered_view_change_votes: HashMap<u64, HashMap<u32, (u64, [u8; 32], G1Projective)>> = HashMap::new();
         let mut recovered_certificates = HashMap::new();
         let mut recovered_commit_certificates = HashMap::new();
-        let mut recovered_new_view_certificates = HashMap::new();
+        let recovered_new_view_certificates = HashMap::new(); // 🔥 اون mut اضافی رو اینجا برداشتم
         let mut recovered_committed = HashMap::new();
 
         let _ = wal.replay_log(|view, seq, phase_u8, sender_id, digest, signature| {
@@ -372,6 +372,33 @@ impl PbftState {
         (view % self.total_nodes as u64) as u32
     }
 
+    // 🔥 تابع گمشده برگشت سر جاش!
+    pub fn handle_view_change_payload(&mut self, payload: &ViewChangePayload) -> Result<(), &'static str> {
+        if !self.registered_nodes.contains(&payload.sender_id) {
+            return Err("UNAUTHORIZED_SENDER");
+        }
+
+        let pk = self.public_keys.get(&payload.sender_id).unwrap();
+        if !verify_bls_signature(&payload.canonical_bytes(), &payload.signature, pk) {
+            return Err("CRYPTO_AUTH_FAILED");
+        }
+
+        if payload.prepared_seq > 0 {
+            let has_valid_qc = self.prepared_certificates.values().any(|cert| {
+                cert.view == payload.prepared_view
+                    && cert.seq == payload.prepared_seq
+                    && cert.digest == payload.digest
+                    && cert.verify(self.quorum_size, &self.master_public_key)
+            });
+
+            if !has_valid_qc {
+                return Err("CERTIFICATE_INVALID");
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn handle_message(&mut self, msg: &PbftMessage) -> Result<String, &'static str> {
         if !self.registered_nodes.contains(&msg.sender_id) {
             return Err("AUTH_FAILED");
@@ -425,7 +452,6 @@ impl PbftState {
 
                 let proposal_key = (msg.view, msg.seq, msg.digest);
                 
-                // INVARIANT ENFORCEMENT: Reject if PrePrepare is missing
                 if !self.pre_prepared_proposals.contains(&proposal_key) {
                     return Err("ORPHAN_PREPARE");
                 }
@@ -459,7 +485,6 @@ impl PbftState {
 
                 let proposal_key = (msg.view, msg.seq, msg.digest);
                 
-                // INVARIANT ENFORCEMENT: Reject if PrePrepare is missing
                 if !self.pre_prepared_proposals.contains(&proposal_key) {
                     return Err("ORPHAN_COMMIT");
                 }
@@ -587,7 +612,6 @@ mod adversarial_tests {
     use rand::rngs::OsRng;
     use crate::threshold_bls::sign_bls_message;
 
-    // Mini-DKG for real polynomial-based test keys (Lagrange compatible)
     fn generate_test_keys(n: usize, threshold: usize) -> (HashMap<u32, Scalar>, HashMap<u32, G2Projective>, G2Projective) {
         let mut secret_polynomial = Vec::new();
         for _ in 0..threshold {
@@ -677,7 +701,6 @@ mod adversarial_tests {
         let seq = 1;
         let digest = [0xdd; 32];
 
-        // Intentionally skipping PrePrepare...
         let mut canonical_prepare = Vec::new();
         canonical_prepare.push(Phase::Prepare as u8);
         canonical_prepare.extend_from_slice(&view.to_be_bytes());
