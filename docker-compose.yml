@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  node0:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: "host"
+    environment:
+      - NODE_ID=0
+      - TOTAL_NODES=4
+      - THRESHOLD=3
+      - BIND_ADDR=127.0.0.1:8000
+      - WAL_PATH=/data/consensus_wal_node_0.log
+      - DKG_TIMEOUT_SECS=15
+    volumes:
+      - node0_wal:/data
+    restart: on-failure
+
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: "host"
+    environment:
+      - NODE_ID=1
+      - TOTAL_NODES=4
+      - THRESHOLD=3
+      - BIND_ADDR=127.0.0.1:8001
+      - WAL_PATH=/data/consensus_wal_node_1.log
+      - DKG_TIMEOUT_SECS=15
+    volumes:
+      - node1_wal:/data
+    restart: on-failure
+
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: "host"
+    environment:
+      - NODE_ID=2
+      - TOTAL_NODES=4
+      - THRESHOLD=3
+      - BIND_ADDR=127.0.0.1:8002
+      - WAL_PATH=/data/consensus_wal_node_2.log
+      - DKG_TIMEOUT_SECS=15
+    volumes:
+      - node2_wal:/data
+    restart: on-failure
+
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: "host"
+    environment:
+      - NODE_ID=3
+      - TOTAL_NODES=4
+      - THRESHOLD=3
+      - BIND_ADDR=127.0.0.1:8003
+      - WAL_PATH=/data/consensus_wal_node_3.log
+      - DKG_TIMEOUT_SECS=15
+    volumes:
+      - node3_wal:/data
+    restart: on-failure
+
+volumes:
+  node0_wal:
+  node1_wal:
+  node2_wal:
+  node3_wal:
+
