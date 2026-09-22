@@ -1,0 +1,43 @@
+name: Evidence-bound PBFT control
+
+on:
+  pull_request:
+    paths:
+      - rust_engine/src/lib.rs
+      - rust_engine/src/pbft_control.rs
+      - rust_engine/src/bin/pbft_external_control.rs
+      - .github/workflows/pbft-control.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-pbft-control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run actual Sovereign-Lattice PBFT control tests
+        run: cargo test --manifest-path rust_engine/Cargo.toml pbft_control::tests -- --nocapture
+      - name: Exercise real PBFT control CLI using a synthetic correlation ID
+        run: |
+          cargo run --manifest-path rust_engine/Cargo.toml --bin pbft_external_control -- \
+            aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            v0,v0,v2,v3 > /tmp/pbft-control.json
+          python3 - <<'PY'
+          import json
+          with open('/tmp/pbft-control.json') as f:
+              result=json.load(f)
+          assert result['schema']=='aria-independent-pbft-control/v1'
+          assert result['distinctSenderCount']==3
+          assert result['pbftQuorumSize']==3
+          assert result['oneReplacementFromControl']
+          assert result['pbftTruncatedFrameRejected']
+          assert result['pbftInvalidPhaseRejected']
+          assert not result['cbcFinalityVerified']
+          assert not result['pbftCertificateVerified']
+          assert not result['liveNetwork']
+          print('PASS: PBFT control remains distinct from CBC claims')
+          PY
