@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn refuses_non_minimal_and_inconsistent_external_shapes() {
-        for ids in ["v0,v1,v2,v3", "v0,v0,v0,v3", "v0,v1,v3,v3", "v0,v1,v2", "v0,v4,v2,v3"] {
+        for ids in ["v0,v1,v2,v3", "v0,v0,v0,v3", "v0,v1,v3,v1", "v0,v1,v2", "v0,v4,v2,v3"] {
             assert!(run_pbft_control(&"a".repeat(64), ids).is_err(), "{ids}");
         }
         assert!(run_pbft_control("abcd", "v0,v0,v2,v3").is_err());
