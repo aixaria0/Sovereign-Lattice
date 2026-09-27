@@ -69,7 +69,7 @@ impl AssuranceAttestation {
             return Err("certificate and scope digests must be SHA-256 fingerprints");
         }
         let material = attestation_material(&certificate_digest, &reviewer_id, &decision, &scope_digest);
-        let attestation_digest = format!("sha256:{:x}", Sha256::digest(material));
+        let attestation_digest = format!("sha256:{:x}", Sha256::digest(&material));
         Ok(Self {
             schema: ATTESTATION_SCHEMA,
             certificate_digest,
