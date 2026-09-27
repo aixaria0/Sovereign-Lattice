@@ -1,7 +1,7 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
-const ATTESTATION_SCHEMA: &str = "causal-assurance-attestation/v1";
+const ATTESTATION_SCHEMA: &str = "causal-assurance-attestation/v2";
 const SIGNATURE_SCHEMA: &str = "causal-assurance-attestation-signature/v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
