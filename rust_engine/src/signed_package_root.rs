@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 
 pub const SIGNED_PACKAGE_ROOT_SCHEMA: &str = "causal-assurance-signed-root/v2";
-pub const PORTABLE_PACKAGE_SCHEMA: &str = "causal-assurance-portable-package/v1";
+pub const PORTABLE_PACKAGE_SCHEMA: &str = "causal-assurance-portable-package/v2";
 
 #[derive(Clone, Debug)]
 pub struct RootArtifact<'a> {
@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn matches_frozen_cross_language_root() {
         let root = canonical_package_root("root-fixture", "generic-system", &fixture()).unwrap();
-        assert_eq!(root, "sha256:6dc2f70171c8bd415e48f275a00bc457b2a14e1eb82d4ee893f5f5dbb73803ae");
+        assert_eq!(root, "sha256:d3dda1ea8d69ef493b83b3b373f6d49c53324a19df127788687db92a31310ace");
     }
 
     #[test]
