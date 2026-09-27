@@ -30,6 +30,18 @@ impl AssuranceAttestation {
         let attestation_digest = format!("sha256:{:x}", Sha256::digest(material.as_bytes()));
         Ok(Self { schema: "causal-assurance-attestation/v1", certificate_digest, reviewer_id, decision, scope_digest, attestation_digest })
     }
+
+    pub fn verify_binding(&self, certificate_digest: &str, scope_digest: &str) -> Result<(), &'static str> {
+        if self.certificate_digest != certificate_digest { return Err("certificate digest binding mismatch"); }
+        if self.scope_digest != scope_digest { return Err("scope digest binding mismatch"); }
+        let material = format!(
+            "causal-assurance-attestation/v1\\0{}\\0{}\\0{}\\0{}",
+            self.certificate_digest, self.reviewer_id, self.decision.as_str(), self.scope_digest
+        );
+        let expected = format!("sha256:{:x}", Sha256::digest(material.as_bytes()));
+        if expected != self.attestation_digest { return Err("attestation digest mismatch"); }
+        Ok(())
+    }
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -45,7 +57,16 @@ mod tests {
         let a = AssuranceAttestation::new(digest('a'), "reviewer-1", ReviewDecision::Confirmed, digest('b')).unwrap();
         let b = AssuranceAttestation::new(digest('a'), "reviewer-1", ReviewDecision::Confirmed, digest('b')).unwrap();
         assert_eq!(a, b);
+        assert!(a.verify_binding(&digest('a'), &digest('b')).is_ok());
     }
+    #[test]
+    fn tampered_binding_is_rejected() {
+        let mut a = AssuranceAttestation::new(digest('a'), "reviewer-1", ReviewDecision::Confirmed, digest('b')).unwrap();
+        assert!(a.verify_binding(&digest('c'), &digest('b')).is_err());
+        a.attestation_digest = digest('d');
+        assert!(a.verify_binding(&digest('a'), &digest('b')).is_err());
+    }
+
     #[test]
     fn invalid_certificate_digest_is_rejected() {
         assert!(AssuranceAttestation::new("bad", "reviewer-1", ReviewDecision::Confirmed, digest('b')).is_err());
