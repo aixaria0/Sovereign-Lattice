@@ -93,7 +93,7 @@ impl AssuranceAttestation {
             &self.decision,
             &self.scope_digest,
         );
-        let expected = format!("sha256:{:x}", Sha256::digest(material));
+        let expected = format!("sha256:{:x}", Sha256::digest(&material));
         if expected != self.attestation_digest {
             return Err("attestation digest mismatch");
         }
