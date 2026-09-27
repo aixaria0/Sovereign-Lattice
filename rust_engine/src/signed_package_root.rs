@@ -22,10 +22,10 @@ pub fn canonical_package_root(run_id:&str, subject:&str, artifacts:&[RootArtifac
 mod tests {
  use super::*;
  #[test] fn canonical_root_is_deterministic() {
-  let w="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  let e="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-  let x="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-  let a="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+  let w="sha256:ba1c566a4bad288c22a0b7511458c92ca5822cd41632e51806e9ea75ed12d13d";
+  let e="sha256:ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e";
+  let x="sha256:d85b40105dd0b9cdbe46a1ee1b96abdf1474ae96fb86bd28ca701f44f017ac3b";
+  let a="sha256:813a89a296973e35545cfa74fe3efd172a7d19443c97c625d699e9737229b0a2";
   let xs=[RootArtifact{role:"WITNESS",sha256:w,binds_to:&[]},RootArtifact{role:"EVIDENCE",sha256:e,binds_to:&[w]},RootArtifact{role:"WORKBENCH",sha256:x,binds_to:&[w,e]},RootArtifact{role:"ATTESTATION",sha256:a,binds_to:&[w,e,x]}];
   let root=canonical_package_root("root-fixture","generic-system",&xs).unwrap();
   assert_eq!(root,"sha256:40264e29c2af27569b0ba9eb7f48d69af676367ef91bc0773959c3198bcf0edf");
