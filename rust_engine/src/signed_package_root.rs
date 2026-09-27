@@ -26,15 +26,18 @@ fn push_length_prefixed(output: &mut Vec<u8>, field: &str) -> Result<(), &'stati
 }
 
 /// Cross-language canonical-root verifier.
-/// Raw artifact bytes are rehashed here; declared digests and all transitive bindings
-/// must match before a package root is produced.
+/// The base package has WITNESS -> EVIDENCE -> WORKBENCH.
+/// A single reviewer ATTESTATION may be appended, but is not required by the base contract.
 pub fn canonical_package_root(
     run_id: &str,
     subject: &str,
     artifacts: &[RootArtifact<'_>],
 ) -> Result<String, &'static str> {
     const ROLES: [&str; 4] = ["WITNESS", "EVIDENCE", "WORKBENCH", "ATTESTATION"];
-    if run_id.trim().is_empty() || subject.trim().is_empty() || artifacts.len() != ROLES.len() {
+    if run_id.trim().is_empty()
+        || subject.trim().is_empty()
+        || !(artifacts.len() == 3 || artifacts.len() == 4)
+    {
         return Err("invalid package shape");
     }
 
@@ -53,7 +56,11 @@ pub fn canonical_package_root(
             return Err("artifact digest mismatch");
         }
         if artifact.binds_to.len() != recomputed.len()
-            || artifact.binds_to.iter().zip(recomputed.iter()).any(|(declared, expected)| *declared != expected)
+            || artifact
+                .binds_to
+                .iter()
+                .zip(recomputed.iter())
+                .any(|(declared, expected)| *declared != expected)
         {
             return Err("artifact binding mismatch");
         }
@@ -100,17 +107,31 @@ mod tests {
     }
 
     #[test]
+    fn base_package_without_attestation_is_valid() {
+        let artifacts = fixture();
+        let root = canonical_package_root("root-fixture", "generic-system", &artifacts[..3]).unwrap();
+        assert!(root.starts_with("sha256:"));
+        assert_eq!(root.len(), 71);
+    }
+
+    #[test]
     fn raw_byte_mutation_fails_closed() {
         let mut artifacts = fixture();
         artifacts[1].bytes = b"evidence!";
-        assert_eq!(canonical_package_root("root-fixture", "generic-system", &artifacts), Err("artifact digest mismatch"));
+        assert_eq!(
+            canonical_package_root("root-fixture", "generic-system", &artifacts),
+            Err("artifact digest mismatch")
+        );
     }
 
     #[test]
     fn role_reordering_fails_closed() {
         let mut artifacts = fixture();
         artifacts.swap(0, 1);
-        assert_eq!(canonical_package_root("root-fixture", "generic-system", &artifacts), Err("invalid artifact"));
+        assert_eq!(
+            canonical_package_root("root-fixture", "generic-system", &artifacts),
+            Err("invalid artifact")
+        );
     }
 
     #[test]
