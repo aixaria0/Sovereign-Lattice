@@ -3,6 +3,7 @@ pub mod pedersen_vss;
 pub mod threshold_bls;
 pub mod pbft;
 pub mod wal;
+pub mod assurance_attestation;
 
 // Exposing the network and async layers to the main compilation tree
 pub mod network;
