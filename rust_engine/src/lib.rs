@@ -1,3 +1,4 @@
+pub mod signed_package_root;
 pub mod dkg;
 pub mod pedersen_vss;
 pub mod threshold_bls;
