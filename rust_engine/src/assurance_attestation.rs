@@ -35,7 +35,7 @@ impl AssuranceAttestation {
         if self.certificate_digest != certificate_digest { return Err("certificate digest binding mismatch"); }
         if self.scope_digest != scope_digest { return Err("scope digest binding mismatch"); }
         let material = format!(
-            "causal-assurance-attestation/v1\\0{}\\0{}\\0{}\\0{}",
+            "causal-assurance-attestation/v1\0{}\0{}\0{}\0{}",
             self.certificate_digest, self.reviewer_id, self.decision.as_str(), self.scope_digest
         );
         let expected = format!("sha256:{:x}", Sha256::digest(material.as_bytes()));
