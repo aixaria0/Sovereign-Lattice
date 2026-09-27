@@ -27,7 +27,8 @@ mod tests {
   let x="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
   let a="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
   let xs=[RootArtifact{role:"WITNESS",sha256:w,binds_to:&[]},RootArtifact{role:"EVIDENCE",sha256:e,binds_to:&[w]},RootArtifact{role:"WORKBENCH",sha256:x,binds_to:&[w,e]},RootArtifact{role:"ATTESTATION",sha256:a,binds_to:&[w,e,x]}];
-  assert_eq!(canonical_package_root("root-fixture","generic-system",&xs).unwrap(),canonical_package_root("root-fixture","generic-system",&xs).unwrap());
+  let root=canonical_package_root("root-fixture","generic-system",&xs).unwrap();
+  assert_eq!(root,"sha256:40264e29c2af27569b0ba9eb7f48d69af676367ef91bc0773959c3198bcf0edf");
  }
  #[test] fn role_reordering_fails_closed() {
   let d="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
