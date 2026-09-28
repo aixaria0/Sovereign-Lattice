@@ -57,4 +57,6 @@ Aixaria, Aria Fani
 
 Apache-2.0 license
 
+## Assurance fabric role
 
+Sovereign-Lattice is an **optional independent evidence-root attestor** in the v1 assurance fabric. The repair attestation module domain-separates and binds the propagation-envelope digest, Sentinel observation digest, repair problem identity, and native-replay eligibility. This attestation is not a replacement for Casper consensus and does not independently prove target-protocol safety or finality.
