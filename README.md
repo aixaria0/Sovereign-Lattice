@@ -4,9 +4,9 @@
 [![Lean 4 Verified](https://img.shields.io/badge/Formal_Verification-Lean_4-blue.svg)](#)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](#)
 
-**Sovereign Lattice** is a high-performance, Byzantine Fault Tolerant (PBFT) consensus engine built in Rust. Designed for deterministic state transitions, it enforces cryptographic integrity via BLS12-381 threshold signatures and guarantees protocol safety through Lean 4 mathematical formal verification.
+**Sovereign Lattice** is a high-performance, Byzantine Fault Tolerant (PBFT) consensus engine built in Rust. Designed for deterministic state transitions, it enforces cryptographic integrity via BLS12-381 threshold signatures with selected protocol invariants modeled and checked in Lean 4 alongside Rust implementation tests.
 
-There is no hype here—only mathematically proven invariants, memory-safe asynchronous networking, and strict state machine replication.
+The repository combines explicit protocol invariants, Rust implementation tests, cryptographic checks, asynchronous networking, and state-machine replication.
 
 https://aixaria0.github.io/SOVEREIGN_LATTICE/
 
@@ -42,12 +42,16 @@ cargo build --release
 
 # Run internal adversarial tests (Ghost Certificate Attack, Malicious Forgery, etc.)
 cargo test
+```
 
-Running a Node
+### Running a Node
+
+```bash
 The engine automatically boots the TCP transport daemon and awaits consensus messages.
 cargo run --release
+```
 
-🛡️ Security & Formal Verification
+## 🛡️ Security & Formal Verification
 The unique proposition of Sovereign Lattice is its rigorous approach to safety. The system does not rely solely on unit tests; its core logic is subjected to Lean 4 formal verification.
 Any incoming network payload that violates the established topology, cryptographic bounds, or state sequence is deterministically dropped before it can mutate the state machine.
 
@@ -57,4 +61,6 @@ Aixaria, Aria Fani
 
 Apache-2.0 license
 
+## Assurance fabric role
 
+Sovereign-Lattice is an **optional independent evidence-root attestor** in the v1 assurance fabric. The repair attestation module domain-separates and binds the propagation-envelope digest, Sentinel observation digest, repair problem identity, and native-replay eligibility. This attestation is not a replacement for Casper consensus and does not independently prove target-protocol safety or finality.
