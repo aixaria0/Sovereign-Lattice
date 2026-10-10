@@ -11,7 +11,6 @@ jobs:
     name: Run 4-Node PBFT Cluster
     runs-on: ubuntu-latest
 
-    # چون کل کدهات تو این پوشه‌ست، میگیم گیت‌هاب دیفالت بره اینجا
     defaults:
       run:
         working-directory: ./rust_engine
@@ -31,6 +30,13 @@ jobs:
       - name: Make smoke test executable
         run: chmod +x scripts/smoke_test.sh
 
-      - name: Execute E2E Cluster Smoke Test
+      - name: Execute 4-process CXP PBFT finality test
+        env:
+          CXP_DIGEST: 8fe0c9456f4c9a64f47aa0e265d3e18972128f7979dc251ac4decdab1ba19dde
         run: ./scripts/smoke_test.sh
 
+      - name: Upload cluster finality artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sovereign-cxp-cluster-finality
+          path: rust_engine/artifacts/sovereign-cxp-cluster-finality.json
