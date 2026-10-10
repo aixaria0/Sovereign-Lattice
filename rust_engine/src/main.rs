@@ -11,7 +11,7 @@ use sovereign_lattice::dkg::{DkgSession, DkgShareMessage};
 use sovereign_lattice::network::{
     send_framed_message, spawn_outbound_broadcaster, start_tcp_listener, PACKET_TYPE_DKG,
 };
-use sovereign_lattice::pbft::{PbftMessage, PbftState};
+use sovereign_lattice::pbft::{PbftMessage, PbftState, Phase};
 use sovereign_lattice::threshold_bls::sign_bls_message;
 
 #[derive(Clone, Debug)]
@@ -53,6 +53,63 @@ impl NodeConfig {
             wal_path,
             dkg_timeout_secs,
         })
+    }
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_digest(value: &str) -> Result<[u8; 32], &'static str> {
+    let value = value.strip_prefix("sha256:").unwrap_or(value);
+    if value.len() != 64 {
+        return Err("AUTO_PROPOSE_DIGEST_MUST_BE_64_HEX_CHARS");
+    }
+    let bytes = value.as_bytes();
+    let mut digest = [0u8; 32];
+    for index in 0..32 {
+        let high = hex_nibble(bytes[index * 2]).ok_or("AUTO_PROPOSE_DIGEST_INVALID_HEX")?;
+        let low = hex_nibble(bytes[index * 2 + 1]).ok_or("AUTO_PROPOSE_DIGEST_INVALID_HEX")?;
+        digest[index] = (high << 4) | low;
+    }
+    Ok(digest)
+}
+
+fn digest_hex(digest: &[u8; 32]) -> String {
+    const LUT: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(64);
+    for byte in digest {
+        result.push(LUT[(byte >> 4) as usize] as char);
+        result.push(LUT[(byte & 0x0f) as usize] as char);
+    }
+    result
+}
+
+fn signed_pbft_message(
+    phase: Phase,
+    view: u64,
+    seq: u64,
+    digest: [u8; 32],
+    sender_id: u32,
+    secret_key: &Scalar,
+) -> PbftMessage {
+    let mut canonical = Vec::new();
+    canonical.push(phase as u8);
+    canonical.extend_from_slice(&view.to_be_bytes());
+    canonical.extend_from_slice(&seq.to_be_bytes());
+    canonical.extend_from_slice(&digest);
+    PbftMessage {
+        phase,
+        view,
+        seq,
+        digest,
+        sender_id,
+        signature: sign_bls_message(&canonical, secret_key),
     }
 }
 
@@ -243,8 +300,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🛡️ [PBFT]: State machine locked! Validator registry securely populated.");
     println!("⚙️  Consensus engine is now live and waiting for blocks...");
 
+    if let Ok(raw_digest) = env::var("AUTO_PROPOSE_DIGEST_HEX") {
+        let digest = decode_digest(&raw_digest)?;
+        sleep(Duration::from_millis(1000)).await;
+
+        let (view, seq, leader_id) = {
+            let guard = shared_state.lock().await;
+            let state = guard.as_ref().ok_or("CONSENSUS_STATE_NOT_INITIALIZED")?;
+            let view = state.current_view;
+            (view, state.highest_seq + 1, state.get_expected_leader(view))
+        };
+
+        if config.node_id == leader_id {
+            let pre_prepare = signed_pbft_message(
+                Phase::PrePrepare,
+                view,
+                seq,
+                digest,
+                config.node_id,
+                &my_secret_share,
+            );
+            {
+                let mut guard = shared_state.lock().await;
+                let state = guard.as_mut().ok_or("CONSENSUS_STATE_NOT_INITIALIZED")?;
+                let response = state.handle_message(&pre_prepare)?;
+                if response != "INBOUND_OK_PREPREPARE" {
+                    return Err(format!("AUTO_PROPOSAL_PREPREPARE_FAILED: {}", response).into());
+                }
+            }
+            tx_broadcast.send(pre_prepare.clone()).await?;
+
+            let prepare = signed_pbft_message(
+                Phase::Prepare,
+                view,
+                seq,
+                digest,
+                config.node_id,
+                &my_secret_share,
+            );
+            {
+                let mut guard = shared_state.lock().await;
+                let state = guard.as_mut().ok_or("CONSENSUS_STATE_NOT_INITIALIZED")?;
+                let response = state.handle_message(&prepare)?;
+                if response != "VOTE_OK_PREPARE" && response != "CERTIFICATE_OK_PREPARED" {
+                    return Err(format!("AUTO_PROPOSAL_PREPARE_FAILED: {}", response).into());
+                }
+            }
+            tx_broadcast.send(prepare).await?;
+            println!(
+                "CXP_PROPOSAL leader={} view={} seq={} digest={} scope=LOCAL_4_PROCESS_LOOPBACK_PBFT",
+                config.node_id,
+                view,
+                seq,
+                digest_hex(&digest)
+            );
+        }
+    }
+
     let _ = broadcaster_handle.await;
 
     Ok(())
 }
-
