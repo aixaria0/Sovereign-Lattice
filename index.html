@@ -1,291 +1,123 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sovereign Lattice | PBFT Dashboard</title>
-    <style>
-        :root {
-            --bg: #09090b;
-            --panel: #18181b;
-            --text-main: #e4e4e7;
-            --text-muted: #a1a1aa;
-            --accent-green: #10b981;
-            --accent-blue: #3b82f6;
-            --accent-red: #ef4444;
-            --font-mono: 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', monospace;
-        }
-
-        body, html {
-            margin: 0;
-            padding: 0;
-            background-color: var(--bg);
-            color: var(--text-main);
-            font-family: var(--font-mono);
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        header {
-            padding: 1.5rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid #27272a;
-            background: rgba(9, 9, 11, 0.8);
-            backdrop-filter: blur(10px);
-        }
-
-        .logo {
-            font-size: 1.5rem;
-            font-weight: bold;
-            letter-spacing: 2px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .badge {
-            font-size: 0.75rem;
-            padding: 0.25rem 0.75rem;
-            border-radius: 9999px;
-            background: rgba(16, 185, 129, 0.1);
-            color: var(--accent-green);
-            border: 1px solid var(--accent-green);
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
-            70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-        }
-
-        main {
-            display: grid;
-            grid-template-columns: 1fr 350px;
-            gap: 1rem;
-            padding: 1rem;
-            flex: 1;
-            overflow: hidden;
-        }
-
-        .panel {
-            background: var(--panel);
-            border: 1px solid #27272a;
-            border-radius: 8px;
-            padding: 1rem;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .panel-header {
-            font-size: 0.85rem;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 1rem;
-            border-bottom: 1px solid #27272a;
-            padding-bottom: 0.5rem;
-        }
-
-        /* Terminal specifics */
-        #terminal {
-            flex: 1;
-            overflow-y: auto;
-            font-size: 0.9rem;
-            line-height: 1.6;
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-
-        .log-entry { margin: 0; }
-        .log-time { color: #52525b; margin-right: 10px; }
-        .log-info { color: var(--accent-blue); }
-        .log-success { color: var(--accent-green); }
-        .log-warning { color: #f59e0b; }
-        .log-fatal { color: var(--accent-red); }
-
-        /* Stats specifics */
-        .stat-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-
-        .stat-box {
-            background: #09090b;
-            padding: 1rem;
-            border-radius: 6px;
-            border: 1px solid #27272a;
-        }
-
-        .stat-label {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            margin-bottom: 0.5rem;
-        }
-
-        .stat-value {
-            font-size: 1.5rem;
-            font-weight: bold;
-            color: var(--text-main);
-        }
-
-        /* Node visualizer */
-        .topology {
-            flex: 1;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            position: relative;
-        }
-
-        .node {
-            width: 12px;
-            height: 12px;
-            background: var(--accent-green);
-            border-radius: 50%;
-            position: absolute;
-            box-shadow: 0 0 15px var(--accent-green);
-        }
-
-        .node:nth-child(1) { top: 20%; left: 50%; transform: translate(-50%, -50%); }
-        .node:nth-child(2) { bottom: 20%; left: 20%; transform: translate(-50%, -50%); }
-        .node:nth-child(3) { bottom: 20%; right: 20%; transform: translate(50%, -50%); }
-        .node:nth-child(4) { top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--accent-blue); box-shadow: 0 0 20px var(--accent-blue);} /* Leader */
-
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: var(--bg); }
-        ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #52525b; }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#07090d" />
+  <meta name="description" content="Sovereign Lattice — an interactive observatory for PBFT execution, quorum safety, strict NewView, BLS12-381, and selected Lean 4 invariants." />
+  <meta property="og:title" content="Sovereign Lattice — Consensus Observatory" />
+  <meta property="og:description" content="Safety is not a feeling. It's an intersection." />
+  <meta property="og:type" content="website" />
+  <title>Sovereign Lattice — Consensus Observatory</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./site.css?v=1" />
 </head>
 <body>
+  <div class="aurora" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="#top"><span class="sigil">SL</span><span><b>SOVEREIGN LATTICE</b><small>CONSENSUS OBSERVATORY</small></span></a>
+    <nav><a href="#observatory">Observatory</a><a href="#safety">Safety</a><a href="#crypto">Crypto</a><a href="#research">Research</a></nav>
+    <a class="source" href="https://github.com/aixaria0/Sovereign-Lattice" target="_blank" rel="noreferrer">SOURCE ↗</a>
+  </header>
 
-    <header>
-        <div class="logo">
-            <span style="color: var(--accent-blue);">💠</span> SOVEREIGN LATTICE
+  <main id="top">
+    <section class="hero shell">
+      <div class="hero-copy">
+        <p class="kicker">RUST EXECUTION × LEAN PROVABILITY</p>
+        <h1>Safety is not a feeling.<br><em>It's an intersection.</em></h1>
+        <p class="lede">A Byzantine-fault-tolerant consensus engine where quorum certificates, strict NewView, WAL-backed state, threshold cryptography, and selected machine-checked invariants meet in one inspectable system.</p>
+        <div class="boundary"><span>INTERACTIVE BROWSER MODEL</span><b>≠</b><span>LIVE DISTRIBUTED NETWORK</span></div>
+        <div class="hero-actions"><a class="btn primary" href="#observatory">OPEN OBSERVATORY ↓</a><a class="btn" href="#safety">INSPECT SAFETY PLANE ↗</a></div>
+      </div>
+      <div class="hero-mark" aria-hidden="true"><div class="orbit o1"></div><div class="orbit o2"></div><div class="orbit o3"></div><div class="core">3f+1<span>2f+1</span></div></div>
+      <div class="metrics">
+        <div><strong>497</strong><span>COMMITS</span></div>
+        <div><strong>3,235</strong><span>RUST LOC</span></div>
+        <div><strong>24</strong><span>TEST FUNCTIONS</span></div>
+        <div><strong>190</strong><span>LEAN LINES</span></div>
+        <div><strong>3</strong><span>WORKFLOWS</span></div>
+      </div>
+    </section>
+
+    <section class="observatory" id="observatory">
+      <div class="shell">
+        <header class="section-head"><div><span>01 / EXECUTION PLANE</span><h2>Interrogate the quorum.</h2></div><p>Click validators to toggle Byzantine behavior. Then propose, rotate the leader, or inject a ghost certificate. The model follows the repository's N=3f+1 / quorum=2f+1 semantics.</p></header>
+        <div class="console-grid">
+          <aside class="control-panel panel">
+            <div class="panel-head"><span>CLUSTER CONTROL</span><b id="faultModel">WITHIN f=1</b></div>
+            <label>PAYLOAD<input id="payload" value="GENESIS_TRANSFER" /></label>
+            <button class="control primary" id="proposeBtn">PROPOSE</button>
+            <button class="control" id="viewBtn">VIEW CHANGE</button>
+            <button class="control danger" id="ghostBtn">GHOST CERT</button>
+            <div class="micro-note">NODE TAP → TOGGLE HONEST / BYZANTINE</div>
+            <div class="phase-rail" id="phaseRail"><span data-phase="idle">IDLE</span><span data-phase="preprepare">PRE-PREPARE</span><span data-phase="prepare">PREPARE</span><span data-phase="commit">COMMIT</span><span data-phase="qc">QC</span></div>
+          </aside>
+
+          <section class="cluster-stage panel" id="clusterStage" data-phase="idle">
+            <div class="panel-head"><span>PBFT://N4/F1</span><b id="stageStatus">READY</b></div>
+            <svg id="clusterSvg" viewBox="0 0 760 600" aria-label="Interactive four-validator PBFT topology">
+              <defs><filter id="softGlow"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+              <g class="grid-ring"><circle cx="380" cy="300" r="210"/><circle cx="380" cy="300" r="128"/></g>
+              <path class="link l01" d="M380 90 L590 300"/><path class="link l12" d="M590 300 L380 510"/><path class="link l23" d="M380 510 L170 300"/><path class="link l30" d="M170 300 L380 90"/><path class="link l02" d="M380 90 L380 510"/><path class="link l13" d="M590 300 L170 300"/>
+              <g class="qc-hub"><circle cx="380" cy="300" r="58"/><text x="380" y="292">QUORUM</text><text class="qc-value" id="qcValue" x="380" y="322">0 / 3</text></g>
+              <g class="validator" data-node="0" transform="translate(380 90)"><circle r="42"/><text class="vid" y="5">V0</text><text class="role" y="62">LEADER</text></g>
+              <g class="validator" data-node="1" transform="translate(590 300)"><circle r="42"/><text class="vid" y="5">V1</text><text class="role" y="62">REPLICA</text></g>
+              <g class="validator" data-node="2" transform="translate(380 510)"><circle r="42"/><text class="vid" y="5">V2</text><text class="role" y="62">REPLICA</text></g>
+              <g class="validator" data-node="3" transform="translate(170 300)"><circle r="42"/><text class="vid" y="5">V3</text><text class="role" y="62">REPLICA</text></g>
+              <g id="packets"></g>
+            </svg>
+            <div class="cluster-stats"><div><small>VIEW / LEADER</small><strong id="viewLeader">0 / 0</strong></div><div><small>SEQ</small><strong id="seq">0</strong></div><div><small>COMMITTED</small><strong id="committed">0</strong></div><div><small>REJECTED</small><strong id="rejected">0</strong></div><div><small>STABILITY Δ</small><strong id="delta">0.9800</strong></div></div>
+          </section>
+
+          <aside class="log-panel panel"><div class="panel-head"><span>EVENT STREAM</span><b>WAL-ALIGNED MODEL</b></div><ol id="eventLog"><li class="info"><span>000</span>Cluster online · N=4 f=1 quorum=3</li></ol><div class="cert-box"><small>LATEST CERTIFICATE</small><strong id="certKind">NONE</strong><span id="certMeta">waiting for consensus</span></div></aside>
         </div>
-        <div class="badge">LEAN 4 FORMALLY VERIFIED</div>
-    </header>
+      </div>
+    </section>
 
-    <main>
-        <div class="panel">
-            <div class="panel-header">Live Consensus Engine (Tokio TCP)</div>
-            <div id="terminal"></div>
+    <section class="dual-plane shell" id="safety">
+      <header class="section-head"><div><span>02 / PROVABILITY PLANE</span><h2>Execution moves. Invariants don't.</h2></div><p>The formal layer does not prove every line of Rust. It machine-checks selected safety properties that constrain what valid execution may claim.</p></header>
+      <div class="plane-grid">
+        <div class="intersection panel">
+          <div class="panel-head"><span>QUORUM INTERSECTION LENS</span><b>|Q₁∩Q₂| ≥ f+1</b></div>
+          <div class="sets"><div class="set q1"><span>Q₁</span></div><div class="set q2"><span>Q₂</span></div><div class="intersection-core">f+1<br><small>shared</small></div><i class="dot d0">0</i><i class="dot d1">1</i><i class="dot d2">2</i><i class="dot d3">3</i></div>
+          <p>For N=4, f=1, each quorum requires 3 validators. Any two quorums intersect in at least 2 nodes, forcing at least one honest overlap under the fault bound.</p>
         </div>
-
-        <div class="panel">
-            <div class="panel-header">Network State</div>
-            
-            <div class="stat-grid">
-                <div class="stat-box">
-                    <div class="stat-label">CURRENT VIEW</div>
-                    <div class="stat-value" id="view-val">0</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-label">HIGHEST SEQ</div>
-                    <div class="stat-value" id="seq-val">0</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-label">QUORUM SIZE</div>
-                    <div class="stat-value">3 / 4</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-label">CRYPTO</div>
-                    <div class="stat-value" style="font-size: 1rem; padding-top: 5px;">BLS12-381</div>
-                </div>
-            </div>
-
-            <div class="panel-header">Topology (N=4, f=1)</div>
-            <div class="topology">
-                <div class="node"></div>
-                <div class="node"></div>
-                <div class="node"></div>
-                <div class="node"></div>
-            </div>
+        <div class="theorems panel">
+          <div class="panel-head"><span>LEAN 4 / SELECTED THEOREMS</span><b>NO sorry / axiom MARKERS</b></div>
+          <article><span>01</span><div><b>quorum_intersection_size</b><p>|Q₁ ∩ Q₂| ≥ f+1 under N=3f+1 and |Q|≥2f+1.</p></div><em>DISCHARGED</em></article>
+          <article><span>02</span><div><b>honest_quorum_intersection</b><p>The overlap cannot be purely Byzantine under the f bound.</p></div><em>DISCHARGED</em></article>
+          <article><span>03</span><div><b>honest_prepare_unique</b><p>An honest node does not prepare conflicting digests for the same view/sequence.</p></div><em>DISCHARGED</em></article>
+          <article><span>04</span><div><b>actual_no_equivocation_across_views</b><p>Committed history cannot be contradicted by a later prepared value under the stated premises.</p></div><em>DISCHARGED</em></article>
+          <article><span>05</span><div><b>Multi_View_Safety</b><p>Committed values at the same sequence remain equal across views.</p></div><em>DISCHARGED</em></article>
         </div>
-    </main>
+      </div>
+    </section>
 
-    <script>
-        const terminal = document.getElementById('terminal');
-        const seqVal = document.getElementById('seq-val');
-        
-        const bootLogs = [
-            { t: "info", m: "🚀 [SOVEREIGN LATTICE]: Initializing formally verified PBFT consensus engine (10/10 Tier)..." },
-            { t: "info", m: "🔒 [CRYPTO ENGINE]: BLS12-381 Cryptography Booting..." },
-            { t: "success", m: "✅ [SYSTEM SECURE]: Real BLS signature verified. Forgeries correctly rejected." },
-            { t: "info", m: "⚙️  [CONSENSUS]: State Machine initialized for N=4 (Quorum Size: 3)" },
-            { t: "info", m: "📡 [NETWORK]: Booting asynchronous TCP transport daemon on 127.0.0.1:8080..." }
-        ];
+    <section class="crypto-section" id="crypto">
+      <div class="shell">
+        <header class="section-head"><div><span>03 / CRYPTOGRAPHIC PLANE</span><h2>Votes become a certificate only after identity survives aggregation.</h2></div><p>The Rust engine uses BLS12-381 primitives. This visualization is explanatory; the repository implementation is the source of truth for actual pairing checks and serialization.</p></header>
+        <div class="crypto-path panel">
+          <div class="crypto-step active"><span>01</span><b>HASH</b><small>domain-bound message</small></div><i>→</i><div class="crypto-step"><span>02</span><b>G1</b><small>hash-to-curve</small></div><i>→</i><div class="crypto-step"><span>03</span><b>SIGN</b><small>validator shares</small></div><i>→</i><div class="crypto-step"><span>04</span><b>AGGREGATE</b><small>2f+1 signers</small></div><i>→</i><div class="crypto-step"><span>05</span><b>VERIFY</b><small>pairing equation</small></div>
+          <button id="cryptoRun">RUN CERTIFICATE PATH</button>
+        </div>
+      </div>
+    </section>
 
-        let seq = 0;
+    <section class="research shell" id="research">
+      <header class="section-head"><div><span>04 / RESEARCH MODULES</span><h2>The lattice extends beyond consensus—without pretending every model is production reality.</h2></div></header>
+      <div class="research-grid">
+        <article><span>HYBRID CERTS</span><h3>Classical quorum × statistical witness</h3><p>A bounded research model joins a BFT certificate to a noisy statistical witness. It is not a claim of quantum consensus.</p><b>MODEL BOUNDARY PRESERVED</b></article>
+        <article><span>FIELD LAB</span><h3>Coupled chaotic pair</h3><p>Entropy, volume, horizon count, and connectivity explore a toy coupled system after a mid-run boundary term.</p><b>DIAGNOSTIC, NOT A DUAL</b></article>
+        <article><span>CODES</span><h3>Compression & distillation</h3><p>Surface, color, qLDPC, bond-dimension compression, 15-to-1 distillation scaling, and BLS hash-to-curve context.</p><b>STRUCTURAL RESEARCH</b></article>
+        <article><span>FABRIC</span><h3>Policy, profile, selection</h3><p>Request gating, machine profiles, bounded selection traces, STRIDE controls, and nonce-binding demonstrations.</p><b>CONTROL PLANE</b></article>
+      </div>
+      <div class="proof-strip"><span>HASH ≠ TRUTH</span><span>QUORUM ≠ OMNISCIENCE</span><span>MODEL ≠ DEPLOYMENT</span><span>PROOF ≠ WHOLE-SYSTEM VERIFICATION</span></div>
+    </section>
+  </main>
 
-        function getConsensusCycle(s) {
-            return [
-                { t: "info", m: `🧩 [NETWORK->PBFT]: Received 101 bytes. Starting safe deserialization...` },
-                { t: "info", m: `📥 [PRE-PREPARE]: Validated leader 0 proposal for View 0 Seq ${s}` },
-                { t: "warning", m: `⏳ [PREPARE VOTE]: Recorded from Node 1. Progress: 1/3` },
-                { t: "warning", m: `⏳ [PREPARE VOTE]: Recorded from Node 2. Progress: 2/3` },
-                { t: "success", m: `✅ [VERIFIED PREPARED CERTIFICATE]: Quorum achieved for View 0 Seq ${s}.` },
-                { t: "warning", m: `⏳ [COMMIT VOTE]: Recorded from Node 1. Progress: 1/3` },
-                { t: "warning", m: `⏳ [COMMIT VOTE]: Recorded from Node 2. Progress: 2/3` },
-                { t: "success", m: `🏆 [COMMITTED WITH CERTIFICATE]: Sequence ${s} definitively committed under View 0.` },
-                { t: "info", m: `💾 [WAL]: Entry written to consensus_wal.log safely.` }
-            ];
-        }
-
-        function appendLog(type, message) {
-            const el = document.createElement('div');
-            el.className = 'log-entry';
-            
-            const time = new Date().toISOString().split('T')[1].slice(0, 12);
-            
-            let colorClass = 'log-info';
-            if (type === 'success') colorClass = 'log-success';
-            if (type === 'warning') colorClass = 'log-warning';
-            if (type === 'fatal') colorClass = 'log-fatal';
-
-            el.innerHTML = `<span class="log-time">[${time}]</span><span class="${colorClass}">${message}</span>`;
-            terminal.appendChild(el);
-            terminal.scrollTop = terminal.scrollHeight;
-        }
-
-        async function sleep(ms) {
-            return new Promise(resolve => setTimeout(resolve, ms));
-        }
-
-        async function runSimulation() {
-            // Boot sequence
-            for (const log of bootLogs) {
-                appendLog(log.t, log.m);
-                await sleep(800 + Math.random() * 500);
-            }
-
-            await sleep(2000);
-
-            // Infinite consensus loop
-            while (true) {
-                seq++;
-                seqVal.innerText = seq;
-                
-                const cycle = getConsensusCycle(seq);
-                for (const log of cycle) {
-                    appendLog(log.t, log.m);
-                    await sleep(300 + Math.random() * 600);
-                }
-                
-                await sleep(3000); // Wait before next block
-            }
-        }
-
-        window.onload = runSimulation;
-    </script>
+  <footer><div class="shell"><b>SOVEREIGN LATTICE</b><p>Rust execution · selected Lean 4 invariants · BLS12-381 · WAL-backed state · adversarial testing.</p><div><a href="https://github.com/aixaria0/Sovereign-Lattice" target="_blank" rel="noreferrer">SOURCE ↗</a><a href="#top">TOP ↑</a></div></div></footer>
+  <script src="./site.js?v=1" defer></script>
 </body>
 </html>

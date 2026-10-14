@@ -4,11 +4,13 @@
 [![Lean 4 Verified](https://img.shields.io/badge/Formal_Verification-Lean_4-blue.svg)](#)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](#)
 
+**[Consensus Observatory](https://aixaria0.github.io/Sovereign-Lattice/)** — interactive PBFT, quorum, view-change, and safety visualization.
+
 **Sovereign Lattice** is a high-performance, Byzantine Fault Tolerant (PBFT) consensus engine built in Rust. Designed for deterministic state transitions, it enforces cryptographic integrity via BLS12-381 threshold signatures with selected protocol invariants modeled and checked in Lean 4 alongside Rust implementation tests.
 
 The repository combines explicit protocol invariants, Rust implementation tests, cryptographic checks, asynchronous networking, and state-machine replication.
 
-https://aixaria0.github.io/SOVEREIGN_LATTICE/
+https://aixaria0.github.io/Sovereign-Lattice/
 
 
 ## Research console labs
