@@ -11,3 +11,5 @@ pub mod network;
 
 // Uncomment this if consensus_engine.rs exists in your src folder
 // pub mod consensus_engine; 
+
+pub mod repair_attestation;
