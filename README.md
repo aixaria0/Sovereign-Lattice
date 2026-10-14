@@ -10,6 +10,17 @@ There is no hype here—only mathematically proven invariants, memory-safe async
 
 https://aixaria0.github.io/SOVEREIGN_LATTICE/
 
+
+## Research console labs
+
+Three labs sit next to the consensus engine. They are structural models, not hardware claims and not an unrestricted runtime.
+
+* **Field** — coupled chaotic pair. Entropy and connectivity are diagnostics, not a wormhole.
+* **Codes** — surface, color, and qLDPC families, bond-dimension compression, 15-to-1 distillation scaling, BLS12-381 hash-to-curve steps.
+* **Fabric** — request gate, Tab S9+ command-node profile, selection trace, STRIDE, nonce-binding demo.
+
+Source: [`labs/`](labs/).
+
 ## 🏗 Core Architecture
 
 * **Formally Verified Consensus:** Core PBFT state transitions and quorum rules ($N = 3f + 1$) are formally verified using Lean 4.
