@@ -2,56 +2,77 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#07090d" />
-  <meta name="description" content="Sovereign Lattice — an interactive observatory for PBFT execution, quorum safety, strict NewView, BLS12-381, and selected Lean 4 invariants." />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#05080b" />
+  <meta name="description" content="Sovereign Lattice — an interactive PBFT observatory for quorum safety, strict NewView, BLS12-381, WAL recovery, and selected Lean 4 invariants." />
   <meta property="og:title" content="Sovereign Lattice — Consensus Observatory" />
   <meta property="og:description" content="Safety is not a feeling. It's an intersection." />
-  <meta property="og:type" content="website" />
   <title>Sovereign Lattice — Consensus Observatory</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./site.css?v=1" />
+  <link rel="stylesheet" href="./site.css?v=2" />
 </head>
 <body>
-  <div class="aurora" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
   <header class="topbar">
-    <a class="brand" href="#top"><span class="sigil">SL</span><span><b>SOVEREIGN LATTICE</b><small>CONSENSUS OBSERVATORY</small></span></a>
-    <nav><a href="#observatory">Observatory</a><a href="#safety">Safety</a><a href="#crypto">Crypto</a><a href="#research">Research</a></nav>
+    <a class="brand" href="#top"><span class="brand-mark">SL</span><span><b>SOVEREIGN LATTICE</b><small>CONSENSUS OBSERVATORY</small></span></a>
+    <nav><a href="#story">Protocol</a><a href="#observatory">Observatory</a><a href="#safety">Proof</a><a href="#crypto">Crypto</a><a href="#research">Research</a></nav>
     <a class="source" href="https://github.com/aixaria0/Sovereign-Lattice" target="_blank" rel="noreferrer">SOURCE ↗</a>
   </header>
 
   <main id="top">
-    <section class="hero shell">
-      <div class="hero-copy">
-        <p class="kicker">RUST EXECUTION × LEAN PROVABILITY</p>
-        <h1>Safety is not a feeling.<br><em>It's an intersection.</em></h1>
-        <p class="lede">A Byzantine-fault-tolerant consensus engine where quorum certificates, strict NewView, WAL-backed state, threshold cryptography, and selected machine-checked invariants meet in one inspectable system.</p>
-        <div class="boundary"><span>INTERACTIVE BROWSER MODEL</span><b>≠</b><span>LIVE DISTRIBUTED NETWORK</span></div>
-        <div class="hero-actions"><a class="btn primary" href="#observatory">OPEN OBSERVATORY ↓</a><a class="btn" href="#safety">INSPECT SAFETY PLANE ↗</a></div>
+    <section class="hero">
+      <canvas id="heroCanvas" aria-hidden="true"></canvas>
+      <div class="hero-vignette" aria-hidden="true"></div>
+      <div class="hero-copy shell">
+        <div class="hero-text">
+          <span class="eyebrow">RUST EXECUTION × LEAN PROVABILITY</span>
+          <h1>Safety is not a feeling.<br><em>It's an intersection.</em></h1>
+          <p class="lede">A Byzantine-fault-tolerant consensus engine where quorum certificates, strict NewView, WAL-backed state, threshold cryptography, and selected machine-checked invariants meet in one inspectable system.</p>
+          <div class="boundary"><b>INTERACTIVE BROWSER MODEL</b><span>≠</span><span>LIVE DISTRIBUTED NETWORK</span></div>
+          <div class="hero-actions"><a class="btn primary" href="#story">ENTER THE PROTOCOL ↓</a><a class="btn" href="#observatory">OPEN OBSERVATORY ↗</a></div>
+        </div>
+        <div class="hero-readout" aria-hidden="true">
+          <span>QUORUM GEOMETRY</span>
+          <strong>3f+1</strong>
+          <small>quorum = 2f+1</small>
+          <div><i></i> SAFE MODEL / f=1</div>
+        </div>
       </div>
-      <div class="hero-mark" aria-hidden="true"><div class="orbit o1"></div><div class="orbit o2"></div><div class="orbit o3"></div><div class="core">3f+1<span>2f+1</span></div></div>
-      <div class="metrics">
-        <div><strong>497</strong><span>COMMITS</span></div>
-        <div><strong>3,235</strong><span>RUST LOC</span></div>
-        <div><strong>24</strong><span>TEST FUNCTIONS</span></div>
-        <div><strong>190</strong><span>LEAN LINES</span></div>
-        <div><strong>3</strong><span>WORKFLOWS</span></div>
+      <div class="metric-ribbon shell">
+        <div><strong>498</strong><span>COMMITS</span></div><div><strong>3,235</strong><span>RUST LOC</span></div><div><strong>26</strong><span>TEST EXECUTIONS</span></div><div><strong>190</strong><span>LEAN LINES</span></div><div><strong>3</strong><span>WORKFLOWS</span></div>
+      </div>
+    </section>
+
+    <section class="protocol-story" id="story">
+      <div class="story-stage">
+        <canvas id="storyCanvas" aria-hidden="true"></canvas>
+        <div class="story-hud">
+          <span id="storyPhase">FORMATION</span><b id="storyEquation">N = 3f + 1</b><small id="storyStatus">four validators enter one fault model</small>
+        </div>
+        <div class="story-quorum" id="storyQuorum"><span>Q₁</span><span>Q₂</span><b>∩</b><em>≥ f+1</em></div>
+      </div>
+      <div class="story-copy shell">
+        <article data-story="formation"><span>01</span><h2>Form the lattice.</h2><p>Four validators establish a 3f+1 topology. One Byzantine participant is inside the model. Two are not.</p></article>
+        <article data-story="proposal"><span>02</span><h2>One leader proposes.</h2><p>PrePrepare fans outward. Identity, view, sequence and digest define the proposal boundary.</p></article>
+        <article data-story="conflict"><span>03</span><h2>Now break it.</h2><p>A Byzantine path tries to fork the story. The visualization deforms; the safety rule does not.</p></article>
+        <article data-story="quorum"><span>04</span><h2>Quorum compresses disagreement.</h2><p>Prepare and commit votes converge. A certificate exists only when at least 2f+1 distinct signers bind the same state.</p></article>
+        <article data-story="proof"><span>05</span><h2>The geometry becomes a theorem.</h2><p>Any two quorums intersect in at least f+1 validators. That overlap is the bridge from execution to provability.</p></article>
+        <article data-story="seal"><span>06</span><h2>Seal the decision.</h2><p>Signature shares aggregate into a cryptographic certificate. Quorum provides agreement; cryptography binds identity.</p></article>
       </div>
     </section>
 
     <section class="observatory" id="observatory">
       <div class="shell">
-        <header class="section-head"><div><span>01 / EXECUTION PLANE</span><h2>Interrogate the quorum.</h2></div><p>Click validators to toggle Byzantine behavior. Then propose, rotate the leader, or inject a ghost certificate. The model follows the repository's N=3f+1 / quorum=2f+1 semantics.</p></header>
-        <div class="console-grid">
+        <header class="section-head"><div><span>01 / EXECUTION PLANE</span><h2>Interrogate the quorum.</h2></div><p>Toggle validator behavior, propose, rotate the leader, or inject a ghost certificate. The model follows the repository's N=3f+1 and quorum=2f+1 semantics.</p></header>
+        <div class="lab-grid">
           <aside class="control-panel panel">
             <div class="panel-head"><span>CLUSTER CONTROL</span><b id="faultModel">WITHIN f=1</b></div>
             <label>PAYLOAD<input id="payload" value="GENESIS_TRANSFER" /></label>
             <button class="control primary" id="proposeBtn">PROPOSE</button>
             <button class="control" id="viewBtn">VIEW CHANGE</button>
             <button class="control danger" id="ghostBtn">GHOST CERT</button>
-            <div class="micro-note">NODE TAP → TOGGLE HONEST / BYZANTINE</div>
             <div class="phase-rail" id="phaseRail"><span data-phase="idle">IDLE</span><span data-phase="preprepare">PRE-PREPARE</span><span data-phase="prepare">PREPARE</span><span data-phase="commit">COMMIT</span><span data-phase="qc">QC</span></div>
           </aside>
 
@@ -59,13 +80,13 @@
             <div class="panel-head"><span>PBFT://N4/F1</span><b id="stageStatus">READY</b></div>
             <svg id="clusterSvg" viewBox="0 0 760 600" aria-label="Interactive four-validator PBFT topology">
               <defs><filter id="softGlow"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
-              <g class="grid-ring"><circle cx="380" cy="300" r="210"/><circle cx="380" cy="300" r="128"/></g>
-              <path class="link l01" d="M380 90 L590 300"/><path class="link l12" d="M590 300 L380 510"/><path class="link l23" d="M380 510 L170 300"/><path class="link l30" d="M170 300 L380 90"/><path class="link l02" d="M380 90 L380 510"/><path class="link l13" d="M590 300 L170 300"/>
+              <g class="mesh"><line x1="380" y1="96" x2="150" y2="420"/><line x1="380" y1="96" x2="610" y2="420"/><line x1="150" y1="420" x2="610" y2="420"/><line x1="380" y1="96" x2="380" y2="510"/><line x1="150" y1="420" x2="380" y2="510"/><line x1="610" y1="420" x2="380" y2="510"/></g>
+              <g class="qc-rings"><circle cx="380" cy="300" r="116"/><circle cx="380" cy="300" r="86"/><circle cx="380" cy="300" r="58"/></g>
               <g class="qc-hub"><circle cx="380" cy="300" r="58"/><text x="380" y="292">QUORUM</text><text class="qc-value" id="qcValue" x="380" y="322">0 / 3</text></g>
-              <g class="validator" data-node="0" transform="translate(380 90)"><circle r="42"/><text class="vid" y="5">V0</text><text class="role" y="62">LEADER</text></g>
-              <g class="validator" data-node="1" transform="translate(590 300)"><circle r="42"/><text class="vid" y="5">V1</text><text class="role" y="62">REPLICA</text></g>
-              <g class="validator" data-node="2" transform="translate(380 510)"><circle r="42"/><text class="vid" y="5">V2</text><text class="role" y="62">REPLICA</text></g>
-              <g class="validator" data-node="3" transform="translate(170 300)"><circle r="42"/><text class="vid" y="5">V3</text><text class="role" y="62">REPLICA</text></g>
+              <g class="validator" data-node="0" transform="translate(380 96)"><circle r="48"/><text class="id" y="-4">V0</text><text class="role" y="18">LEADER</text></g>
+              <g class="validator" data-node="1" transform="translate(150 420)"><circle r="48"/><text class="id" y="-4">V1</text><text class="role" y="18">REPLICA</text></g>
+              <g class="validator" data-node="2" transform="translate(610 420)"><circle r="48"/><text class="id" y="-4">V2</text><text class="role" y="18">REPLICA</text></g>
+              <g class="validator" data-node="3" transform="translate(380 510)"><circle r="48"/><text class="id" y="-4">V3</text><text class="role" y="18">REPLICA</text></g>
               <g id="packets"></g>
             </svg>
             <div class="cluster-stats"><div><small>VIEW / LEADER</small><strong id="viewLeader">0 / 0</strong></div><div><small>SEQ</small><strong id="seq">0</strong></div><div><small>COMMITTED</small><strong id="committed">0</strong></div><div><small>REJECTED</small><strong id="rejected">0</strong></div><div><small>STABILITY Δ</small><strong id="delta">0.9800</strong></div></div>
@@ -76,48 +97,50 @@
       </div>
     </section>
 
-    <section class="dual-plane shell" id="safety">
-      <header class="section-head"><div><span>02 / PROVABILITY PLANE</span><h2>Execution moves. Invariants don't.</h2></div><p>The formal layer does not prove every line of Rust. It machine-checks selected safety properties that constrain what valid execution may claim.</p></header>
-      <div class="plane-grid">
-        <div class="intersection panel">
-          <div class="panel-head"><span>QUORUM INTERSECTION LENS</span><b>|Q₁∩Q₂| ≥ f+1</b></div>
-          <div class="sets"><div class="set q1"><span>Q₁</span></div><div class="set q2"><span>Q₂</span></div><div class="intersection-core">f+1<br><small>shared</small></div><i class="dot d0">0</i><i class="dot d1">1</i><i class="dot d2">2</i><i class="dot d3">3</i></div>
-          <p>For N=4, f=1, each quorum requires 3 validators. Any two quorums intersect in at least 2 nodes, forcing at least one honest overlap under the fault bound.</p>
-        </div>
-        <div class="theorems panel">
-          <div class="panel-head"><span>LEAN 4 / SELECTED THEOREMS</span><b>NO sorry / axiom MARKERS</b></div>
-          <article><span>01</span><div><b>quorum_intersection_size</b><p>|Q₁ ∩ Q₂| ≥ f+1 under N=3f+1 and |Q|≥2f+1.</p></div><em>DISCHARGED</em></article>
-          <article><span>02</span><div><b>honest_quorum_intersection</b><p>The overlap cannot be purely Byzantine under the f bound.</p></div><em>DISCHARGED</em></article>
-          <article><span>03</span><div><b>honest_prepare_unique</b><p>An honest node does not prepare conflicting digests for the same view/sequence.</p></div><em>DISCHARGED</em></article>
-          <article><span>04</span><div><b>actual_no_equivocation_across_views</b><p>Committed history cannot be contradicted by a later prepared value under the stated premises.</p></div><em>DISCHARGED</em></article>
-          <article><span>05</span><div><b>Multi_View_Safety</b><p>Committed values at the same sequence remain equal across views.</p></div><em>DISCHARGED</em></article>
+    <section class="proof-plane" id="safety">
+      <div class="shell">
+        <header class="section-head"><div><span>02 / PROVABILITY PLANE</span><h2>Execution moves. Invariants don't.</h2></div><p>The formal layer does not prove every line of Rust. It machine-checks selected safety properties that constrain what valid execution may claim.</p></header>
+        <div class="proof-layout">
+          <div class="intersection-lens panel">
+            <div class="proof-orbit q1"><span>Q₁</span></div><div class="proof-orbit q2"><span>Q₂</span></div><div class="intersection-core"><strong>≥ f+1</strong><span>HONEST OVERLAP</span></div>
+            <p>Two 2f+1 quorums inside a 3f+1 universe cannot avoid one another.</p>
+          </div>
+          <div class="theorem-stack">
+            <article><span>01</span><div><b>quorum_intersection_size</b><p>|Q₁ ∩ Q₂| ≥ f+1</p></div><em>LEAN 4</em></article>
+            <article><span>02</span><div><b>honest_quorum_intersection</b><p>Every quorum pair shares an honest validator.</p></div><em>LEAN 4</em></article>
+            <article><span>03</span><div><b>honest_prepare_unique</b><p>An honest validator cannot prepare conflicting digests.</p></div><em>LEAN 4</em></article>
+            <article><span>04</span><div><b>actual_no_equivocation_across_views</b><p>Prepared evidence constrains later views.</p></div><em>LEAN 4</em></article>
+            <article><span>05</span><div><b>Multi_View_Safety</b><p>Committed values at one sequence remain equal across views.</p></div><em>LEAN 4</em></article>
+          </div>
         </div>
       </div>
     </section>
 
     <section class="crypto-section" id="crypto">
       <div class="shell">
-        <header class="section-head"><div><span>03 / CRYPTOGRAPHIC PLANE</span><h2>Votes become a certificate only after identity survives aggregation.</h2></div><p>The Rust engine uses BLS12-381 primitives. This visualization is explanatory; the repository implementation is the source of truth for actual pairing checks and serialization.</p></header>
-        <div class="crypto-path panel">
-          <div class="crypto-step active"><span>01</span><b>HASH</b><small>domain-bound message</small></div><i>→</i><div class="crypto-step"><span>02</span><b>G1</b><small>hash-to-curve</small></div><i>→</i><div class="crypto-step"><span>03</span><b>SIGN</b><small>validator shares</small></div><i>→</i><div class="crypto-step"><span>04</span><b>AGGREGATE</b><small>2f+1 signers</small></div><i>→</i><div class="crypto-step"><span>05</span><b>VERIFY</b><small>pairing equation</small></div>
+        <header class="section-head"><div><span>03 / CRYPTOGRAPHIC PLANE</span><h2>Agreement becomes identity-bound evidence.</h2></div><p>BLS12-381 shares converge into one certificate path. This animation is explanatory; repository code remains the source of truth.</p></header>
+        <div class="crypto-orbit panel">
+          <div class="sig-ring"><i style="--a:0deg">σ₀</i><i style="--a:120deg">σ₁</i><i style="--a:240deg">σ₂</i></div>
+          <div class="seal"><span>BLS12-381</span><strong>QC</strong><small>2f+1 SHARES</small></div>
+          <div class="crypto-path"><div class="crypto-step active"><span>01</span><b>HASH</b></div><i>→</i><div class="crypto-step"><span>02</span><b>G1</b></div><i>→</i><div class="crypto-step"><span>03</span><b>SIGN</b></div><i>→</i><div class="crypto-step"><span>04</span><b>AGGREGATE</b></div><i>→</i><div class="crypto-step"><span>05</span><b>VERIFY</b></div></div>
           <button id="cryptoRun">RUN CERTIFICATE PATH</button>
         </div>
       </div>
     </section>
 
     <section class="research shell" id="research">
-      <header class="section-head"><div><span>04 / RESEARCH MODULES</span><h2>The lattice extends beyond consensus—without pretending every model is production reality.</h2></div></header>
-      <div class="research-grid">
-        <article><span>HYBRID CERTS</span><h3>Classical quorum × statistical witness</h3><p>A bounded research model joins a BFT certificate to a noisy statistical witness. It is not a claim of quantum consensus.</p><b>MODEL BOUNDARY PRESERVED</b></article>
-        <article><span>FIELD LAB</span><h3>Coupled chaotic pair</h3><p>Entropy, volume, horizon count, and connectivity explore a toy coupled system after a mid-run boundary term.</p><b>DIAGNOSTIC, NOT A DUAL</b></article>
-        <article><span>CODES</span><h3>Compression & distillation</h3><p>Surface, color, qLDPC, bond-dimension compression, 15-to-1 distillation scaling, and BLS hash-to-curve context.</p><b>STRUCTURAL RESEARCH</b></article>
-        <article><span>FABRIC</span><h3>Policy, profile, selection</h3><p>Request gating, machine profiles, bounded selection traces, STRIDE controls, and nonce-binding demonstrations.</p><b>CONTROL PLANE</b></article>
+      <header class="section-head"><div><span>04 / RESEARCH MODULES</span><h2>Four different worlds. One boundary discipline.</h2></div></header>
+      <div class="research-worlds">
+        <article class="world hybrid"><div class="world-visual"><i></i><i></i><i></i></div><span>HYBRID CERTS</span><h3>Classical quorum × statistical witness</h3><p>A bounded research model; not a claim of quantum consensus.</p><b>MODEL BOUNDARY PRESERVED</b></article>
+        <article class="world field"><div class="world-visual"><i></i><i></i><i></i><i></i></div><span>FIELD</span><h3>Coupled chaotic diagnostics</h3><p>Entropy and connectivity are observables, not a wormhole.</p><b>STRUCTURAL MODEL</b></article>
+        <article class="world codes"><div class="world-visual"><i></i><i></i><i></i><i></i><i></i></div><span>CODES</span><h3>Surface · color · qLDPC</h3><p>Error-correction families and compression experiments.</p><b>RESEARCH SURFACE</b></article>
+        <article class="world fabric"><div class="world-visual"><i></i><i></i><i></i></div><span>FABRIC</span><h3>Request gate × command node</h3><p>Selection trace, STRIDE framing and nonce binding.</p><b>CONTROL SURFACE</b></article>
       </div>
       <div class="proof-strip"><span>HASH ≠ TRUTH</span><span>QUORUM ≠ OMNISCIENCE</span><span>MODEL ≠ DEPLOYMENT</span><span>PROOF ≠ WHOLE-SYSTEM VERIFICATION</span></div>
     </section>
   </main>
 
-  <footer><div class="shell"><b>SOVEREIGN LATTICE</b><p>Rust execution · selected Lean 4 invariants · BLS12-381 · WAL-backed state · adversarial testing.</p><div><a href="https://github.com/aixaria0/Sovereign-Lattice" target="_blank" rel="noreferrer">SOURCE ↗</a><a href="#top">TOP ↑</a></div></div></footer>
-  <script src="./site.js?v=1" defer></script>
+  <footer class="footer shell"><div><b>SOVEREIGN LATTICE</b><span>Rust execution × Lean provability</span></div><p>Interactive browser models are explanatory surfaces. Repository code, tests, and proof artifacts define the actual evidence boundary.</p><a href="#top">TOP ↑</a></footer>
+  <script src="./site.js?v=2" defer></script>
 </body>
 </html>
