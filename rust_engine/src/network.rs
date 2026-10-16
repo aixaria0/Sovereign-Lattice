@@ -16,6 +16,16 @@ pub const PACKET_TYPE_DKG: u8 = 0x01;
 pub const PACKET_TYPE_PBFT: u8 = 0x02;
 pub const PACKET_TYPE_VC: u8 = 0x03;
 
+fn digest_hex(digest: &[u8; 32]) -> String {
+    const LUT: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(64);
+    for byte in digest {
+        result.push(LUT[(byte >> 4) as usize] as char);
+        result.push(LUT[(byte & 0x0f) as usize] as char);
+    }
+    result
+}
+
 pub async fn send_framed_message(
     target_addr: SocketAddr,
     packet_type: u8,
@@ -195,7 +205,17 @@ async fn handle_connection(
             let outgoing_msg = {
                 let mut guard = state.lock().await;
                 let locked_state = guard.as_mut().unwrap();
-                let _ = locked_state.handle_message(&msg)?;
+                let response = locked_state.handle_message(&msg)?;
+                if response == "COMMITTED_OK" {
+                    println!(
+                        "CXP_FINALITY node_id={} view={} seq={} digest={} quorum={} scope=LOCAL_4_PROCESS_LOOPBACK_PBFT",
+                        self_id,
+                        msg.view,
+                        msg.seq,
+                        digest_hex(&msg.digest),
+                        locked_state.quorum_size
+                    );
+                }
 
                 match msg.phase {
                     Phase::PrePrepare => {
