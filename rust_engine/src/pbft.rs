@@ -282,6 +282,24 @@ impl PbftState {
         initial_public_keys: HashMap<u32, G2Projective>,
         master_public_key: G2Projective,
     ) -> Result<Self, &'static str> {
+        let wal_path = if let Ok(custom_path) = std::env::var("WAL_PATH") {
+            custom_path
+        } else if cfg!(test) {
+            let count = TEST_WAL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            format!("consensus_wal_test_{}_{:?}.log", count, std::thread::current().id())
+        } else {
+            format!("consensus_wal_pid_{}.log", std::process::id())
+        };
+
+        Self::new_with_wal_path(total_nodes, initial_public_keys, master_public_key, wal_path)
+    }
+
+    fn new_with_wal_path(
+        total_nodes: usize,
+        initial_public_keys: HashMap<u32, G2Projective>,
+        master_public_key: G2Projective,
+        wal_path: String,
+    ) -> Result<Self, &'static str> {
         let f = (total_nodes - 1) / 3;
         if total_nodes != 3 * f + 1 {
             return Err("TOPOLOGY_VIOLATION");
@@ -295,15 +313,6 @@ impl PbftState {
                 return Err("REGISTRY_VIOLATION");
             }
         }
-
-        let wal_path = if let Ok(custom_path) = std::env::var("WAL_PATH") {
-            custom_path
-        } else if cfg!(test) {
-            let count = TEST_WAL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            format!("consensus_wal_test_{}_{:?}.log", count, std::thread::current().id())
-        } else {
-            format!("consensus_wal_pid_{}.log", std::process::id())
-        };
 
         let mut wal = WriteAheadLog::open(&wal_path).map_err(|_| "WAL_ERROR")?;
 
@@ -442,7 +451,39 @@ impl PbftState {
             return Err("CRYPTO_AUTH_FAILED");
         }
 
-        let response = match msg.phase {
+        // Keep a rollback image so rejected transitions and failed durable appends
+        // cannot leave the in-memory protocol state ahead of the WAL.
+        let snapshot = (
+            self.current_view,
+            self.highest_seq,
+            self.last_stable_checkpoint,
+            self.prepared_certificates.clone(),
+            self.commit_certificates.clone(),
+            self.new_view_certificates.clone(),
+            self.committed_digest.clone(),
+            self.pre_prepared_proposals.clone(),
+            self.prepare_votes.clone(),
+            self.commit_votes.clone(),
+            self.checkpoint_votes.clone(),
+            self.view_change_votes.clone(),
+        );
+        let restore_state = |state: &mut Self| {
+            state.current_view = snapshot.0;
+            state.highest_seq = snapshot.1;
+            state.last_stable_checkpoint = snapshot.2;
+            state.prepared_certificates = snapshot.3.clone();
+            state.commit_certificates = snapshot.4.clone();
+            state.new_view_certificates = snapshot.5.clone();
+            state.committed_digest = snapshot.6.clone();
+            state.pre_prepared_proposals = snapshot.7.clone();
+            state.prepare_votes = snapshot.8.clone();
+            state.commit_votes = snapshot.9.clone();
+            state.checkpoint_votes = snapshot.10.clone();
+            state.view_change_votes = snapshot.11.clone();
+        };
+
+        let response = match (|| -> Result<String, &'static str> {
+            Ok(match msg.phase {
             Phase::PrePrepare => {
                 if msg.view != self.current_view {
                     return Err("VIEW_MISMATCH");
@@ -640,17 +681,30 @@ impl PbftState {
                     self.committed_digest.retain(|&(_, s), _| s > msg.seq);
                     self.checkpoint_votes.retain(|&(s, _), _| s > msg.seq);
 
-                    let _ = self.wal.prune_before(msg.seq + 1);
-
                     format!("CHECKPOINT_STABILIZED")
                 } else {
                     format!("VOTE_OK_CHECKPOINT")
                 }
             }
+            })
+        })() {
+            Ok(response) => response,
+            Err(error) => {
+                restore_state(self);
+                return Err(error);
+            }
         };
 
-        self.wal.append_entry(msg.view, msg.seq, msg.phase as u8, msg.sender_id, &msg.digest, &msg.signature)
-            .map_err(|_| "WAL_ERROR")?;
+        if self.wal.append_entry(msg.view, msg.seq, msg.phase as u8, msg.sender_id, &msg.digest, &msg.signature).is_err() {
+            restore_state(self);
+            return Err("WAL_ERROR");
+        }
+
+        // Keep the checkpoint certificate records (sequence == checkpoint) in the
+        // WAL. They are the durable evidence used to recover last_stable_checkpoint.
+        if msg.phase == Phase::Checkpoint && response == "CHECKPOINT_STABILIZED" {
+            self.wal.prune_before(msg.seq).map_err(|_| "WAL_PRUNE_ERROR")?;
+        }
 
         Ok(response)
     }
@@ -662,6 +716,7 @@ mod adversarial_tests {
     use bls12_381::{G2Projective, Scalar};
     use ff::Field;
     use rand::rngs::OsRng;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use crate::threshold_bls::sign_bls_message;
 
     fn generate_test_keys(n: usize, threshold: usize) -> (HashMap<u32, Scalar>, HashMap<u32, G2Projective>, G2Projective) {
@@ -774,12 +829,24 @@ mod adversarial_tests {
     }
 
     #[test]
-    fn test_checkpoint_and_wal_pruning() {
+    fn test_checkpoint_and_wal_pruning_recovers_stable_checkpoint() {
         let n = 4;
         let threshold = 3;
         let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let wal_path = std::env::temp_dir().join(format!(
+            "sovereign_lattice_pbft_checkpoint_{}_{}.log",
+            std::process::id(),
+            nonce
+        ));
+        let wal_path = wal_path.to_string_lossy().into_owned();
 
-        let mut state = PbftState::new(n, public_keys.clone(), master_pk).expect("Failed init");
+        let mut state = PbftState::new_with_wal_path(
+            n,
+            public_keys.clone(),
+            master_pk.clone(),
+            wal_path.clone(),
+        ).expect("Failed init");
 
         let seq_to_checkpoint: u64 = 5;
         let digest = [0x55; 32];
@@ -806,5 +873,52 @@ mod adversarial_tests {
 
         assert_eq!(state.last_stable_checkpoint, seq_to_checkpoint);
         assert!(state.checkpoint_votes.is_empty());
+        drop(state);
+
+        let recovered = PbftState::new_with_wal_path(
+            n,
+            public_keys,
+            master_pk,
+            wal_path.clone(),
+        ).expect("Failed to recover checkpoint from WAL");
+        assert_eq!(recovered.last_stable_checkpoint, seq_to_checkpoint);
+        drop(recovered);
+        std::fs::remove_file(wal_path).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wal_append_failure_rolls_back_protocol_state() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let mut state = PbftState::new_with_wal_path(
+            n,
+            public_keys,
+            master_pk,
+            "/dev/full".to_string(),
+        ).expect("Failed init with /dev/full WAL");
+
+        let view = state.current_view;
+        let leader_id = state.get_expected_leader(view);
+        let seq = state.highest_seq + 1;
+        let digest = [0x6a; 32];
+        let mut canonical = Vec::new();
+        canonical.push(Phase::PrePrepare as u8);
+        canonical.extend_from_slice(&view.to_be_bytes());
+        canonical.extend_from_slice(&seq.to_be_bytes());
+        canonical.extend_from_slice(&digest);
+        let msg = PbftMessage {
+            phase: Phase::PrePrepare,
+            view,
+            seq,
+            digest,
+            sender_id: leader_id,
+            signature: sign_bls_message(&canonical, &secret_keys[&leader_id]),
+        };
+
+        assert_eq!(state.handle_message(&msg), Err("WAL_ERROR"));
+        assert_eq!(state.highest_seq, 0);
+        assert!(!state.pre_prepared_proposals.contains(&(view, seq, digest)));
     }
 }
