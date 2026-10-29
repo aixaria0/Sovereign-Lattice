@@ -451,6 +451,12 @@ impl PbftState {
             return Err("CRYPTO_AUTH_FAILED");
         }
 
+        // Obsolete checkpoints were historically acknowledged without being logged.
+        // Preserve that behavior and avoid treating them as new protocol events.
+        if msg.phase == Phase::Checkpoint && msg.seq <= self.last_stable_checkpoint {
+            return Ok("CHECKPOINT_OBSOLETE".to_string());
+        }
+
         // Keep a rollback image so rejected transitions and failed durable appends
         // cannot leave the in-memory protocol state ahead of the WAL.
         let snapshot = (
@@ -664,10 +670,6 @@ impl PbftState {
             }
 
             Phase::Checkpoint => {
-                if msg.seq <= self.last_stable_checkpoint {
-                    return Ok("CHECKPOINT_OBSOLETE".to_string());
-                }
-
                 let sigs = self.checkpoint_votes.entry((msg.seq, msg.digest)).or_default();
                 sigs.insert(msg.sender_id, msg.signature);
 
@@ -892,12 +894,20 @@ mod adversarial_tests {
         let n = 4;
         let threshold = 3;
         let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let wal_path = std::env::temp_dir().join(format!(
+            "sovereign_lattice_pbft_failed_append_{}_{}.log",
+            std::process::id(),
+            nonce
+        ));
+        let wal_path = wal_path.to_string_lossy().into_owned();
         let mut state = PbftState::new_with_wal_path(
             n,
             public_keys,
             master_pk,
-            "/dev/full".to_string(),
-        ).expect("Failed init with /dev/full WAL");
+            wal_path.clone(),
+        ).expect("Failed init with temporary WAL");
+        state.wal.fail_next_append_for_test();
 
         let view = state.current_view;
         let leader_id = state.get_expected_leader(view);
@@ -920,5 +930,7 @@ mod adversarial_tests {
         assert_eq!(state.handle_message(&msg), Err("WAL_ERROR"));
         assert_eq!(state.highest_seq, 0);
         assert!(!state.pre_prepared_proposals.contains(&(view, seq, digest)));
+        drop(state);
+        std::fs::remove_file(wal_path).unwrap();
     }
 }
