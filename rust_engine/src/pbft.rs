@@ -320,7 +320,7 @@ impl PbftState {
         let recovered_new_view_certificates = HashMap::new();
         let mut recovered_committed = HashMap::new();
 
-        let _ = wal.replay_log(|view, seq, phase_u8, sender_id, digest, signature| {
+        wal.replay_log(|view, seq, phase_u8, sender_id, digest, signature| {
             if view > recovered_view { recovered_view = view; }
             if seq > recovered_seq { recovered_seq = seq; }
 
@@ -360,7 +360,7 @@ impl PbftState {
                 }
                 _ => {}
             }
-        });
+        }).map_err(|_| "WAL_REPLAY_ERROR")?;
 
         if recovered_stable_checkpoint > 0 {
             recovered_proposals.retain(|&(_, s, _)| s > recovered_stable_checkpoint);
