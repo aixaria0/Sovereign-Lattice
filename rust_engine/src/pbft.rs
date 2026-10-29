@@ -274,6 +274,8 @@ pub struct PbftState {
     pub public_keys: HashMap<u32, G2Projective>,
     pub master_public_key: G2Projective,
     wal: WriteAheadLog,
+    // Fail-stop after a write/compaction error; a partial WAL record may exist.
+    wal_failed: bool,
 }
 
 impl PbftState {
@@ -401,6 +403,7 @@ impl PbftState {
             public_keys: initial_public_keys,
             master_public_key,
             wal,
+            wal_failed: false,
         })
     }
 
@@ -435,6 +438,10 @@ impl PbftState {
     }
 
     pub fn handle_message(&mut self, msg: &PbftMessage) -> Result<String, &'static str> {
+        if self.wal_failed {
+            return Err("WAL_UNAVAILABLE");
+        }
+
         if !self.registered_nodes.contains(&msg.sender_id) {
             return Err("AUTH_FAILED");
         }
@@ -699,13 +706,20 @@ impl PbftState {
 
         if self.wal.append_entry(msg.view, msg.seq, msg.phase as u8, msg.sender_id, &msg.digest, &msg.signature).is_err() {
             restore_state(self);
+            self.wal_failed = true;
             return Err("WAL_ERROR");
         }
 
         // Keep the checkpoint certificate records (sequence == checkpoint) in the
         // WAL. They are the durable evidence used to recover last_stable_checkpoint.
         if msg.phase == Phase::Checkpoint && response == "CHECKPOINT_STABILIZED" {
-            self.wal.prune_before(msg.seq).map_err(|_| "WAL_PRUNE_ERROR")?;
+            if self.wal.prune_before(msg.seq).is_err() {
+                // The checkpoint votes are durable, but the WAL handle or directory
+                // durability may be uncertain after compaction failure. Stop processing
+                // until a clean restart/replay re-establishes the durable state.
+                self.wal_failed = true;
+                return Err("WAL_PRUNE_ERROR");
+            }
         }
 
         Ok(response)
@@ -930,6 +944,7 @@ mod adversarial_tests {
         assert_eq!(state.handle_message(&msg), Err("WAL_ERROR"));
         assert_eq!(state.highest_seq, 0);
         assert!(!state.pre_prepared_proposals.contains(&(view, seq, digest)));
+        assert!(state.wal_failed);
         drop(state);
         std::fs::remove_file(wal_path).unwrap();
     }
