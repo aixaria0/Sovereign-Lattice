@@ -1044,7 +1044,7 @@ mod adversarial_tests {
         let mut state = PbftState::new_with_wal_path(
             n, public_keys.clone(), master_pk.clone(), wal_path.clone()
         ).expect("Failed init");
-        let target_view = 7;
+        let target_view: u64 = 7;
         let digest = [0x77; 32];
 
         let make_vote = |sender_id: u32| {
