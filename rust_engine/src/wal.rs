@@ -138,12 +138,14 @@ impl WriteAheadLog {
         // Sync the parent directory so the rename is persisted on filesystems
         // that support directory fsync. Opening directories is supported on Unix.
         #[cfg(unix)]
-        let parent = self
-            .path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        File::open(parent)?.sync_all()?;
+        {
+            let parent = self
+                .path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            File::open(parent)?.sync_all()?;
+        }
 
         self.file = OpenOptions::new()
             .create(true)
