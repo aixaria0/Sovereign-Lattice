@@ -427,8 +427,9 @@ impl PbftState {
                 3 => {
                     if seq > 0
                         && !recovered_certificates.values().any(|cert| {
-                            cert.view == view
-                                && cert.seq == seq
+                            // A view-change targets a new view; its prepared
+                            // certificate may have been formed in an earlier view.
+                            cert.seq == seq
                                 && cert.digest == digest
                                 && cert.verify(quorum_size, &master_public_key)
                         })
@@ -449,8 +450,8 @@ impl PbftState {
 
                         let selected_prepared_certificate = if max_quorum_seq > 0 {
                             match recovered_certificates.values().find(|cert| {
-                                cert.view == view
-                                    && cert.seq == max_quorum_seq
+                                // Bind by the prepared slot/value, not the target view.
+                                cert.seq == max_quorum_seq
                                     && cert.digest == best_digest
                                     && cert.verify(quorum_size, &master_public_key)
                             }).cloned() {
@@ -742,8 +743,9 @@ impl PbftState {
 
                 if msg.seq > 0 {
                     let has_valid_qc = self.prepared_certificates.values().any(|cert| {
-                        cert.view == msg.view
-                            && cert.seq == msg.seq
+                        // msg.view is the target view, while the prepared
+                        // certificate normally belongs to an earlier view.
+                        cert.seq == msg.seq
                             && cert.digest == msg.digest
                             && cert.verify(self.quorum_size, &self.master_public_key)
                     });
@@ -1035,6 +1037,92 @@ mod adversarial_tests {
             PbftState::new_with_wal_path(n, public_keys, master_pk, wal_path.clone()),
             Err("WAL_REPLAY_ERROR")
         ));
+        std::fs::remove_file(wal_path).unwrap();
+    }
+
+    #[test]
+    fn view_change_accepts_previous_view_prepared_certificate_and_recovers() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let wal_path = std::env::temp_dir().join(format!(
+            "sovereign_lattice_pbft_prepared_view_change_{}_{}.log",
+            std::process::id(),
+            nonce
+        ));
+        let wal_path = wal_path.to_string_lossy().into_owned();
+
+        let mut state = PbftState::new_with_wal_path(
+            n, public_keys.clone(), master_pk.clone(), wal_path.clone()
+        ).expect("Failed init");
+
+        let prepared_view = 0u64;
+        let target_view = 1u64;
+        let seq = 1u64;
+        let digest = [0x5c; 32];
+
+        let mut pre_prepare_bytes = Vec::new();
+        pre_prepare_bytes.push(Phase::PrePrepare as u8);
+        pre_prepare_bytes.extend_from_slice(&prepared_view.to_be_bytes());
+        pre_prepare_bytes.extend_from_slice(&seq.to_be_bytes());
+        pre_prepare_bytes.extend_from_slice(&digest);
+        let pre_prepare = PbftMessage {
+            phase: Phase::PrePrepare,
+            view: prepared_view,
+            seq,
+            digest,
+            sender_id: 0,
+            signature: sign_bls_message(&pre_prepare_bytes, &secret_keys[&0]),
+        };
+        assert_eq!(state.handle_message(&pre_prepare).unwrap(), "INBOUND_OK_PREPREPARE");
+
+        for sender_id in 0..threshold as u32 {
+            let mut prepare_bytes = Vec::new();
+            prepare_bytes.push(Phase::Prepare as u8);
+            prepare_bytes.extend_from_slice(&prepared_view.to_be_bytes());
+            prepare_bytes.extend_from_slice(&seq.to_be_bytes());
+            prepare_bytes.extend_from_slice(&digest);
+            let prepare = PbftMessage {
+                phase: Phase::Prepare,
+                view: prepared_view,
+                seq,
+                digest,
+                sender_id,
+                signature: sign_bls_message(&prepare_bytes, &secret_keys[&sender_id]),
+            };
+            assert!(state.handle_message(&prepare).is_ok());
+        }
+        assert!(state.prepared_certificates.contains_key(&(prepared_view, seq)));
+
+        for sender_id in 0..threshold as u32 {
+            let mut view_change_bytes = Vec::new();
+            view_change_bytes.push(Phase::ViewChange as u8);
+            view_change_bytes.extend_from_slice(&target_view.to_be_bytes());
+            view_change_bytes.extend_from_slice(&seq.to_be_bytes());
+            view_change_bytes.extend_from_slice(&digest);
+            let view_change = PbftMessage {
+                phase: Phase::ViewChange,
+                view: target_view,
+                seq,
+                digest,
+                sender_id,
+                signature: sign_bls_message(&view_change_bytes, &secret_keys[&sender_id]),
+            };
+            assert!(state.handle_message(&view_change).is_ok());
+        }
+        assert_eq!(state.current_view, target_view);
+        drop(state);
+
+        let recovered = PbftState::new_with_wal_path(
+            n, public_keys, master_pk, wal_path.clone()
+        ).expect("Restart must recover a new-view certificate using the older prepared certificate");
+        assert_eq!(recovered.current_view, target_view);
+        let new_view = recovered.new_view_certificates.get(&target_view)
+            .expect("Recovered new-view certificate");
+        assert!(new_view.selected_prepared_certificate.as_ref().unwrap()
+            .verify(recovered.quorum_size, &recovered.master_public_key));
+        drop(recovered);
         std::fs::remove_file(wal_path).unwrap();
     }
 
