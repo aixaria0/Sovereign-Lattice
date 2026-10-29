@@ -845,6 +845,43 @@ mod adversarial_tests {
     }
 
     #[test]
+    fn failed_view_change_certificate_rolls_back_mutated_votes_and_view() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let mut state = PbftState::new(n, public_keys, master_pk).expect("Failed init");
+
+        let target_view = 1;
+        let existing_digest = [0x31; 32];
+        let mut supporters = HashMap::new();
+        supporters.insert(0, (1, existing_digest, G1Projective::generator()));
+        supporters.insert(1, (1, existing_digest, G1Projective::generator()));
+        state.view_change_votes.insert(target_view, supporters);
+
+        let sender_id = 2;
+        let digest = [0x32; 32];
+        let mut canonical = Vec::new();
+        canonical.push(Phase::ViewChange as u8);
+        canonical.extend_from_slice(&target_view.to_be_bytes());
+        canonical.extend_from_slice(&0u64.to_be_bytes());
+        canonical.extend_from_slice(&digest);
+        let msg = PbftMessage {
+            phase: Phase::ViewChange,
+            view: target_view,
+            seq: 0,
+            digest,
+            sender_id,
+            signature: sign_bls_message(&canonical, &secret_keys[&sender_id]),
+        };
+
+        assert_eq!(state.handle_message(&msg), Err("MISSING_QUORUM_CERTIFICATE"));
+        assert_eq!(state.current_view, 0);
+        let restored = state.view_change_votes.get(&target_view).unwrap();
+        assert_eq!(restored.len(), 2);
+        assert!(!restored.contains_key(&sender_id));
+    }
+
+    #[test]
     fn test_checkpoint_and_wal_pruning_recovers_stable_checkpoint() {
         let n = 4;
         let threshold = 3;
