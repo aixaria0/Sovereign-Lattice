@@ -7,7 +7,7 @@ Changes on branch `fix/wal-crash-recovery`:
 - Replay distinguishes clean EOF from a truncated final record and returns `UnexpectedEof` instead of silently accepting a partial tail.
 - Replay rejects invalid compressed signature points instead of silently skipping them.
 - Pruning rejects truncated records, syncs the replacement file, atomically renames it, and syncs the parent directory on Unix before reopening the WAL.
-- Tests cover round-trip replay, truncated tail rejection, invalid point rejection, and pruning behavior.
+- Tests cover record round-trip, truncated tail rejection, invalid point rejection, pruning retention, and relative-path handling.
 
 ## Remaining risks
 
