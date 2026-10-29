@@ -138,9 +138,12 @@ impl WriteAheadLog {
         // Sync the parent directory so the rename is persisted on filesystems
         // that support directory fsync. Opening directories is supported on Unix.
         #[cfg(unix)]
-        if let Some(parent) = self.path.parent() {
-            File::open(parent)?.sync_all()?;
-        }
+        let parent = self
+            .path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(parent)?.sync_all()?;
 
         self.file = OpenOptions::new()
             .create(true)
@@ -199,6 +202,22 @@ mod tests {
         let mut wal = WriteAheadLog::open(&path).unwrap();
         let err = wal.replay_log(|_, _, _, _, _, _| {}).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn prune_supports_relative_path_without_explicit_parent() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = PathBuf::from(format!(
+            ".sovereign_lattice_wal_relative_{}_{}.log",
+            std::process::id(),
+            nonce
+        ));
+        {
+            let mut wal = WriteAheadLog::open(&path).unwrap();
+            wal.append_entry(1, 1, 1, 1, &[9; 32], &G1Projective::generator()).unwrap();
+            wal.prune_before(1).unwrap();
+        }
         std::fs::remove_file(path).unwrap();
     }
 
