@@ -15,6 +15,8 @@ const RECORD_LEN: usize = 101;
 pub struct WriteAheadLog {
     file: File,
     pub path: PathBuf,
+    #[cfg(test)]
+    fail_next_append: bool,
 }
 
 impl WriteAheadLog {
@@ -26,7 +28,17 @@ impl WriteAheadLog {
             .write(true)
             .append(true)
             .open(&path_buf)?;
-        Ok(Self { file, path: path_buf })
+        Ok(Self {
+            file,
+            path: path_buf,
+            #[cfg(test)]
+            fail_next_append: false,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_append_for_test(&mut self) {
+        self.fail_next_append = true;
     }
 
     pub fn append_entry(
@@ -38,6 +50,11 @@ impl WriteAheadLog {
         digest: &[u8; 32],
         signature: &G1Projective,
     ) -> io::Result<()> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_append) {
+            return Err(io::Error::new(io::ErrorKind::Other, "injected WAL append failure"));
+        }
+
         let mut buf = Vec::with_capacity(RECORD_LEN);
         buf.extend_from_slice(&view.to_be_bytes());
         buf.extend_from_slice(&seq.to_be_bytes());
@@ -135,6 +152,17 @@ impl WriteAheadLog {
         drop(file);
 
         std::fs::rename(&temp_path, &self.path)?;
+
+        // Reopen the replacement before directory sync. If syncing the directory
+        // reports an error, future appends must still target the live WAL path,
+        // not the old unlinked inode.
+        self.file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .append(true)
+            .open(&self.path)?;
+
         // Sync the parent directory so the rename is persisted on filesystems
         // that support directory fsync. Opening directories is supported on Unix.
         #[cfg(unix)]
@@ -147,12 +175,6 @@ impl WriteAheadLog {
             File::open(parent)?.sync_all()?;
         }
 
-        self.file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .append(true)
-            .open(&self.path)?;
         Ok(())
     }
 }
