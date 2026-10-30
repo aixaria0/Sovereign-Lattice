@@ -202,31 +202,89 @@ pub struct NewViewCertificate {
     pub selected_prepared_certificate: Option<PreparedCertificate>,
 }
 
+/// Return an unambiguous highest-sequence statement from a view-change quorum.
+/// Conflicting digests at the highest non-empty sequence must never be resolved by
+/// HashMap iteration order. Sequence zero carries no prepared value, so its digest
+/// is intentionally ignored.
+fn highest_view_change_slot(
+    votes: &HashMap<u32, (u64, [u8; 32], G1Projective)>,
+) -> Option<(u64, [u8; 32])> {
+    let max_seq = votes.values().map(|(seq, _, _)| *seq).max()?;
+
+    if max_seq == 0 {
+        return Some((0, [0u8; 32]));
+    }
+
+    let mut digest_at_max: Option<[u8; 32]> = None;
+    for (seq, digest, _) in votes.values() {
+        if *seq != max_seq {
+            continue;
+        }
+        match digest_at_max {
+            Some(existing) if existing != *digest => return None,
+            None => digest_at_max = Some(*digest),
+            _ => {}
+        }
+    }
+
+    digest_at_max.map(|digest| (max_seq, digest))
+}
+
+/// Select the highest valid prepared certificate for the value reported by a
+/// view-change quorum. A prepared certificate must come from a view strictly
+/// earlier than the target view. The signer-id tie-break makes the result
+/// independent of HashMap iteration when equivalent certificates exist.
+fn select_highest_prepared_certificate(
+    certificates: impl IntoIterator<Item = PreparedCertificate>,
+    target_view: u64,
+    seq: u64,
+    digest: [u8; 32],
+    quorum_size: usize,
+    master_pk: &G2Projective,
+) -> Option<PreparedCertificate> {
+    let mut candidates = certificates
+        .into_iter()
+        .filter(|cert| {
+            cert.view < target_view
+                && cert.seq == seq
+                && cert.digest == digest
+                && cert.verify(quorum_size, master_pk)
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|a, b| {
+        b.view.cmp(&a.view).then_with(|| {
+            let mut a_signers = a.signatures.keys().copied().collect::<Vec<_>>();
+            let mut b_signers = b.signatures.keys().copied().collect::<Vec<_>>();
+            a_signers.sort_unstable();
+            b_signers.sort_unstable();
+            a_signers.cmp(&b_signers)
+        })
+    });
+
+    candidates.into_iter().next()
+}
+
 impl NewViewCertificate {
     pub fn verify(&self, quorum_size: usize, master_pk: &G2Projective, public_keys: &HashMap<u32, G2Projective>) -> bool {
         if self.view_change_votes.len() < quorum_size {
             return false;
         }
 
-        let max_quorum_seq = self
-            .view_change_votes
-            .values()
-            .map(|&(s, _, _)| s)
-            .max()
-            .unwrap_or(0);
-        
-        let best_digest = self
-            .view_change_votes
-            .values()
-            .find(|&&(s, _, _)| s == max_quorum_seq)
-            .map(|&(_, d, _)| d)
-            .unwrap_or([0u8; 32]);
+        let (max_quorum_seq, best_digest) =
+            match highest_view_change_slot(&self.view_change_votes) {
+                Some(slot) => slot,
+                None => return false,
+            };
 
         if let Some(ref cert) = self.selected_prepared_certificate {
             if !cert.verify(quorum_size, master_pk) {
                 return false;
             }
-            if cert.seq != max_quorum_seq || cert.digest != best_digest {
+            if cert.view >= self.target_view
+                || cert.seq != max_quorum_seq
+                || cert.digest != best_digest
+            {
                 return false;
             }
         } else {
@@ -267,13 +325,15 @@ pub struct PbftState {
     pre_prepared_proposals: HashSet<(u64, u64, [u8; 32])>,
     prepare_votes: HashMap<(u64, u64, [u8; 32]), HashMap<u32, G1Projective>>,
     commit_votes: HashMap<(u64, u64, [u8; 32]), HashMap<u32, G1Projective>>,
-    pub checkpoint_votes: HashMap<(u64, [u8; 32]), HashMap<u32, G1Projective>>,
+    pub checkpoint_votes: HashMap<(u64, u64, [u8; 32]), HashMap<u32, G1Projective>>,
     pub view_change_votes: HashMap<u64, HashMap<u32, (u64, [u8; 32], G1Projective)>>,
     pub quorum_size: usize,
     registered_nodes: HashSet<u32>,
     pub public_keys: HashMap<u32, G2Projective>,
     pub master_public_key: G2Projective,
     wal: WriteAheadLog,
+    // Fail-stop after a write/compaction error; a partial WAL record may exist.
+    wal_failed: bool,
 }
 
 impl PbftState {
@@ -281,6 +341,24 @@ impl PbftState {
         total_nodes: usize,
         initial_public_keys: HashMap<u32, G2Projective>,
         master_public_key: G2Projective,
+    ) -> Result<Self, &'static str> {
+        let wal_path = if let Ok(custom_path) = std::env::var("WAL_PATH") {
+            custom_path
+        } else if cfg!(test) {
+            let count = TEST_WAL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            format!("consensus_wal_test_{}_{:?}.log", count, std::thread::current().id())
+        } else {
+            format!("consensus_wal_pid_{}.log", std::process::id())
+        };
+
+        Self::new_with_wal_path(total_nodes, initial_public_keys, master_public_key, wal_path)
+    }
+
+    fn new_with_wal_path(
+        total_nodes: usize,
+        initial_public_keys: HashMap<u32, G2Projective>,
+        master_public_key: G2Projective,
+        wal_path: String,
     ) -> Result<Self, &'static str> {
         let f = (total_nodes - 1) / 3;
         if total_nodes != 3 * f + 1 {
@@ -296,15 +374,6 @@ impl PbftState {
             }
         }
 
-        let wal_path = if let Ok(custom_path) = std::env::var("WAL_PATH") {
-            custom_path
-        } else if cfg!(test) {
-            let count = TEST_WAL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            format!("consensus_wal_test_{}_{:?}.log", count, std::thread::current().id())
-        } else {
-            format!("consensus_wal_pid_{}.log", std::process::id())
-        };
-
         let mut wal = WriteAheadLog::open(&wal_path).map_err(|_| "WAL_ERROR")?;
 
         let mut recovered_view = 0;
@@ -313,54 +382,186 @@ impl PbftState {
         let mut recovered_proposals = HashSet::new();
         let mut recovered_prepare_votes: HashMap<(u64, u64, [u8; 32]), HashMap<u32, G1Projective>> = HashMap::new();
         let mut recovered_commit_votes: HashMap<(u64, u64, [u8; 32]), HashMap<u32, G1Projective>> = HashMap::new();
-        let mut recovered_checkpoint_votes: HashMap<(u64, [u8; 32]), HashMap<u32, G1Projective>> = HashMap::new();
+        let mut recovered_checkpoint_votes: HashMap<(u64, u64, [u8; 32]), HashMap<u32, G1Projective>> = HashMap::new();
         let mut recovered_view_change_votes: HashMap<u64, HashMap<u32, (u64, [u8; 32], G1Projective)>> = HashMap::new();
         let mut recovered_certificates = HashMap::new();
         let mut recovered_commit_certificates = HashMap::new();
-        let recovered_new_view_certificates = HashMap::new();
+        let mut recovered_new_view_certificates = HashMap::new();
         let mut recovered_committed = HashMap::new();
 
-        let _ = wal.replay_log(|view, seq, phase_u8, sender_id, digest, signature| {
-            if view > recovered_view { recovered_view = view; }
-            if seq > recovered_seq { recovered_seq = seq; }
+        let mut recovery_error = false;
+        wal.replay_log(|view, seq, phase_u8, sender_id, digest, signature| {
+            if recovery_error {
+                return;
+            }
+
+            // A point that decodes is not evidence that a registered node signed it.
+            // Authenticate every durable row before allowing it to affect recovered state.
+            if phase_u8 > Phase::Checkpoint as u8 || !registered_nodes.contains(&sender_id) {
+                recovery_error = true;
+                return;
+            }
+            let Some(sender_pk) = initial_public_keys.get(&sender_id) else {
+                recovery_error = true;
+                return;
+            };
+            let mut canonical_msg = Vec::with_capacity(1 + 8 + 8 + 32);
+            canonical_msg.push(phase_u8);
+            canonical_msg.extend_from_slice(&view.to_be_bytes());
+            canonical_msg.extend_from_slice(&seq.to_be_bytes());
+            canonical_msg.extend_from_slice(&digest);
+            if !verify_bls_signature(&canonical_msg, &signature, sender_pk) {
+                recovery_error = true;
+                return;
+            }
+
+            // Pre-prepare records must be from the leader for that view, and a WAL
+            // cannot legitimately contain two different proposals for one slot.
+            if phase_u8 == Phase::PrePrepare as u8 {
+                if sender_id != (view % total_nodes as u64) as u32
+                    || recovered_proposals.iter().any(|&(old_view, old_seq, old_digest)| {
+                        old_view == view && old_seq == seq && old_digest != digest
+                    })
+                {
+                    recovery_error = true;
+                    return;
+                }
+            }
+
+            // Ordinary messages in a nonzero view are durable evidence that the
+            // node had already advanced to that view. A lone view-change vote or a
+            // checkpoint message by itself is not enough to advance current_view.
+            if phase_u8 <= Phase::Commit as u8 && view > recovered_view {
+                recovered_view = view;
+            }
+            if seq > recovered_seq {
+                recovered_seq = seq;
+            }
 
             match phase_u8 {
-                0 => { recovered_proposals.insert((view, seq, digest)); }
+                0 => {
+                    recovered_proposals.insert((view, seq, digest));
+                }
                 1 => {
+                    if !recovered_proposals.contains(&(view, seq, digest)) {
+                        recovery_error = true;
+                        return;
+                    }
                     let sigs = recovered_prepare_votes.entry((view, seq, digest)).or_default();
                     sigs.insert(sender_id, signature);
                     if sigs.len() >= quorum_size {
                         let cert = PreparedCertificate { view, seq, digest, signatures: sigs.clone() };
-                        if cert.verify(quorum_size, &master_public_key) {
-                            recovered_certificates.insert((view, seq), cert);
+                        if !cert.verify(quorum_size, &master_public_key) {
+                            recovery_error = true;
+                            return;
                         }
+                        recovered_certificates.insert((view, seq), cert);
                     }
                 }
                 2 => {
+                    if !recovered_proposals.contains(&(view, seq, digest))
+                        || !recovered_certificates.values().any(|cert| {
+                            cert.view == view
+                                && cert.seq == seq
+                                && cert.digest == digest
+                                && cert.verify(quorum_size, &master_public_key)
+                        })
+                    {
+                        recovery_error = true;
+                        return;
+                    }
                     let sigs = recovered_commit_votes.entry((view, seq, digest)).or_default();
                     sigs.insert(sender_id, signature);
                     if sigs.len() >= quorum_size {
                         let commit_cert = CommitCertificate { view, seq, digest, signatures: sigs.clone() };
-                        if commit_cert.verify(quorum_size, &master_public_key) {
-                            recovered_commit_certificates.insert((view, seq), commit_cert);
-                            recovered_committed.insert((view, seq), digest);
+                        if !commit_cert.verify(quorum_size, &master_public_key) {
+                            recovery_error = true;
+                            return;
                         }
+                        recovered_commit_certificates.insert((view, seq), commit_cert);
+                        recovered_committed.insert((view, seq), digest);
                     }
                 }
                 3 => {
+                    if seq > 0
+                        && !recovered_certificates.values().any(|cert| {
+                            // A view-change targets a new view; its prepared
+                            // certificate may have been formed in an earlier view.
+                            cert.view < view
+                                && cert.seq == seq
+                                && cert.digest == digest
+                                && cert.verify(quorum_size, &master_public_key)
+                        })
+                    {
+                        recovery_error = true;
+                        return;
+                    }
+
                     let supporters = recovered_view_change_votes.entry(view).or_default();
                     supporters.insert(sender_id, (seq, digest, signature));
-                }
-                4 => {
-                    let supporters = recovered_checkpoint_votes.entry((seq, digest)).or_default();
-                    supporters.insert(sender_id, signature);
-                    if supporters.len() >= quorum_size && seq > recovered_stable_checkpoint {
-                        recovered_stable_checkpoint = seq;
+                    if supporters.len() >= quorum_size {
+                        let (max_quorum_seq, best_digest) =
+                            match highest_view_change_slot(supporters) {
+                                Some(slot) => slot,
+                                None => {
+                                    recovery_error = true;
+                                    return;
+                                }
+                            };
+
+                        let selected_prepared_certificate = if max_quorum_seq > 0 {
+                            match select_highest_prepared_certificate(
+                                recovered_certificates.values().cloned(),
+                                view,
+                                max_quorum_seq,
+                                best_digest,
+                                quorum_size,
+                                &master_public_key,
+                            ) {
+                                Some(cert) => Some(cert),
+                                None => {
+                                    recovery_error = true;
+                                    return;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+
+                        let new_view_cert = NewViewCertificate {
+                            target_view: view,
+                            view_change_votes: supporters.clone(),
+                            selected_prepared_certificate,
+                        };
+                        if !new_view_cert.verify(quorum_size, &master_public_key, &initial_public_keys) {
+                            recovery_error = true;
+                            return;
+                        }
+                        recovered_view = recovered_view.max(view);
+                        recovered_new_view_certificates.insert(view, new_view_cert);
                     }
                 }
-                _ => {}
+                4 => {
+                    let supporters = recovered_checkpoint_votes.entry((view, seq, digest)).or_default();
+                    supporters.insert(sender_id, signature);
+                    if supporters.len() >= quorum_size {
+                        if seq > recovered_stable_checkpoint {
+                            recovered_stable_checkpoint = seq;
+                        }
+                        // Checkpoint signatures cover the view too. A quorum of
+                        // authenticated checkpoint votes also proves this view was
+                        // active when those votes were accepted.
+                        recovered_view = recovered_view.max(view);
+                    }
+                }
+                _ => {
+                    recovery_error = true;
+                }
             }
-        });
+        }).map_err(|_| "WAL_REPLAY_ERROR")?;
+        if recovery_error {
+            return Err("WAL_REPLAY_ERROR");
+        }
 
         if recovered_stable_checkpoint > 0 {
             recovered_proposals.retain(|&(_, s, _)| s > recovered_stable_checkpoint);
@@ -369,7 +570,7 @@ impl PbftState {
             recovered_certificates.retain(|&(_, s), _| s > recovered_stable_checkpoint);
             recovered_commit_certificates.retain(|&(_, s), _| s > recovered_stable_checkpoint);
             recovered_committed.retain(|&(_, s), _| s > recovered_stable_checkpoint);
-            recovered_checkpoint_votes.retain(|&(s, _), _| s > recovered_stable_checkpoint);
+            recovered_checkpoint_votes.retain(|&(_, s, _), _| s > recovered_stable_checkpoint);
         }
 
         Ok(Self {
@@ -392,6 +593,7 @@ impl PbftState {
             public_keys: initial_public_keys,
             master_public_key,
             wal,
+            wal_failed: false,
         })
     }
 
@@ -426,6 +628,10 @@ impl PbftState {
     }
 
     pub fn handle_message(&mut self, msg: &PbftMessage) -> Result<String, &'static str> {
+        if self.wal_failed {
+            return Err("WAL_UNAVAILABLE");
+        }
+
         if !self.registered_nodes.contains(&msg.sender_id) {
             return Err("AUTH_FAILED");
         }
@@ -442,7 +648,45 @@ impl PbftState {
             return Err("CRYPTO_AUTH_FAILED");
         }
 
-        let response = match msg.phase {
+        // Obsolete checkpoints were historically acknowledged without being logged.
+        // Preserve that behavior and avoid treating them as new protocol events.
+        if msg.phase == Phase::Checkpoint && msg.seq <= self.last_stable_checkpoint {
+            return Ok("CHECKPOINT_OBSOLETE".to_string());
+        }
+
+        // Keep a rollback image so rejected transitions and failed durable appends
+        // cannot leave the in-memory protocol state ahead of the WAL.
+        let snapshot = (
+            self.current_view,
+            self.highest_seq,
+            self.last_stable_checkpoint,
+            self.prepared_certificates.clone(),
+            self.commit_certificates.clone(),
+            self.new_view_certificates.clone(),
+            self.committed_digest.clone(),
+            self.pre_prepared_proposals.clone(),
+            self.prepare_votes.clone(),
+            self.commit_votes.clone(),
+            self.checkpoint_votes.clone(),
+            self.view_change_votes.clone(),
+        );
+        let restore_state = |state: &mut Self| {
+            state.current_view = snapshot.0;
+            state.highest_seq = snapshot.1;
+            state.last_stable_checkpoint = snapshot.2;
+            state.prepared_certificates = snapshot.3.clone();
+            state.commit_certificates = snapshot.4.clone();
+            state.new_view_certificates = snapshot.5.clone();
+            state.committed_digest = snapshot.6.clone();
+            state.pre_prepared_proposals = snapshot.7.clone();
+            state.prepare_votes = snapshot.8.clone();
+            state.commit_votes = snapshot.9.clone();
+            state.checkpoint_votes = snapshot.10.clone();
+            state.view_change_votes = snapshot.11.clone();
+        };
+
+        let response = match (|| -> Result<String, &'static str> {
+            Ok(match msg.phase {
             Phase::PrePrepare => {
                 if msg.view != self.current_view {
                     return Err("VIEW_MISMATCH");
@@ -562,8 +806,9 @@ impl PbftState {
 
                 if msg.seq > 0 {
                     let has_valid_qc = self.prepared_certificates.values().any(|cert| {
-                        cert.view == msg.view
-                            && cert.seq == msg.seq
+                        // msg.view is the target view, while the prepared
+                        // certificate normally belongs to an earlier view.
+                        cert.seq == msg.seq
                             && cert.digest == msg.digest
                             && cert.verify(self.quorum_size, &self.master_public_key)
                     });
@@ -579,19 +824,21 @@ impl PbftState {
                 if supporters.len() >= self.quorum_size {
                     self.current_view = msg.view;
 
-                    let max_quorum_seq = supporters.values().map(|&(s, _, _)| s).max().unwrap_or(0);
-                    let best_digest = supporters
-                        .values()
-                        .find(|&&(s, _, _)| s == max_quorum_seq)
-                        .map(|&(_, d, _)| d)
-                        .unwrap_or([0u8; 32]);
+                    let (max_quorum_seq, best_digest) =
+                        match highest_view_change_slot(supporters) {
+                            Some(slot) => slot,
+                            None => return Err("CONFLICTING_VIEW_CHANGE_DIGESTS"),
+                        };
 
                     let bound_cert = if max_quorum_seq > 0 {
-                        let cert_opt = self.prepared_certificates.values().find(|c| {
-                                c.seq == max_quorum_seq
-                                    && c.digest == best_digest
-                                    && c.verify(self.quorum_size, &self.master_public_key)
-                            }).cloned();
+                        let cert_opt = select_highest_prepared_certificate(
+                            self.prepared_certificates.values().cloned(),
+                            msg.view,
+                            max_quorum_seq,
+                            best_digest,
+                            self.quorum_size,
+                            &self.master_public_key,
+                        );
 
                         if cert_opt.is_none() {
                             return Err("MISSING_QUORUM_CERTIFICATE");
@@ -623,11 +870,11 @@ impl PbftState {
             }
 
             Phase::Checkpoint => {
-                if msg.seq <= self.last_stable_checkpoint {
-                    return Ok("CHECKPOINT_OBSOLETE".to_string());
+                if msg.view != self.current_view {
+                    return Err("VIEW_MISMATCH");
                 }
 
-                let sigs = self.checkpoint_votes.entry((msg.seq, msg.digest)).or_default();
+                let sigs = self.checkpoint_votes.entry((msg.view, msg.seq, msg.digest)).or_default();
                 sigs.insert(msg.sender_id, msg.signature);
 
                 if sigs.len() >= self.quorum_size {
@@ -638,19 +885,39 @@ impl PbftState {
                     self.prepared_certificates.retain(|&(_, s), _| s > msg.seq);
                     self.commit_certificates.retain(|&(_, s), _| s > msg.seq);
                     self.committed_digest.retain(|&(_, s), _| s > msg.seq);
-                    self.checkpoint_votes.retain(|&(s, _), _| s > msg.seq);
-
-                    let _ = self.wal.prune_before(msg.seq + 1);
+                    self.checkpoint_votes.retain(|&(_, s, _), _| s > msg.seq);
 
                     format!("CHECKPOINT_STABILIZED")
                 } else {
                     format!("VOTE_OK_CHECKPOINT")
                 }
             }
+            })
+        })() {
+            Ok(response) => response,
+            Err(error) => {
+                restore_state(self);
+                return Err(error);
+            }
         };
 
-        self.wal.append_entry(msg.view, msg.seq, msg.phase as u8, msg.sender_id, &msg.digest, &msg.signature)
-            .map_err(|_| "WAL_ERROR")?;
+        if self.wal.append_entry(msg.view, msg.seq, msg.phase as u8, msg.sender_id, &msg.digest, &msg.signature).is_err() {
+            restore_state(self);
+            self.wal_failed = true;
+            return Err("WAL_ERROR");
+        }
+
+        // Keep the checkpoint certificate records (sequence == checkpoint) in the
+        // WAL. They are the durable evidence used to recover last_stable_checkpoint.
+        if msg.phase == Phase::Checkpoint && response == "CHECKPOINT_STABILIZED" {
+            if self.wal.prune_before(msg.seq).is_err() {
+                // The checkpoint votes are durable, but the WAL handle or directory
+                // durability may be uncertain after compaction failure. Stop processing
+                // until a clean restart/replay re-establishes the durable state.
+                self.wal_failed = true;
+                return Err("WAL_PRUNE_ERROR");
+            }
+        }
 
         Ok(response)
     }
@@ -662,6 +929,7 @@ mod adversarial_tests {
     use bls12_381::{G2Projective, Scalar};
     use ff::Field;
     use rand::rngs::OsRng;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use crate::threshold_bls::sign_bls_message;
 
     fn generate_test_keys(n: usize, threshold: usize) -> (HashMap<u32, Scalar>, HashMap<u32, G2Projective>, G2Projective) {
@@ -774,12 +1042,270 @@ mod adversarial_tests {
     }
 
     #[test]
-    fn test_checkpoint_and_wal_pruning() {
+    fn failed_view_change_certificate_rolls_back_mutated_votes_and_view() {
         let n = 4;
         let threshold = 3;
         let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let mut state = PbftState::new(n, public_keys, master_pk).expect("Failed init");
 
-        let mut state = PbftState::new(n, public_keys.clone(), master_pk).expect("Failed init");
+        let target_view = 1;
+        let existing_digest = [0x31; 32];
+        let mut supporters = HashMap::new();
+        supporters.insert(0, (1, existing_digest, G1Projective::generator()));
+        supporters.insert(1, (1, existing_digest, G1Projective::generator()));
+        state.view_change_votes.insert(target_view, supporters);
+
+        let sender_id = 2;
+        let digest = [0x32; 32];
+        let mut canonical = Vec::new();
+        canonical.push(Phase::ViewChange as u8);
+        canonical.extend_from_slice(&target_view.to_be_bytes());
+        canonical.extend_from_slice(&0u64.to_be_bytes());
+        canonical.extend_from_slice(&digest);
+        let msg = PbftMessage {
+            phase: Phase::ViewChange,
+            view: target_view,
+            seq: 0,
+            digest,
+            sender_id,
+            signature: sign_bls_message(&canonical, &secret_keys[&sender_id]),
+        };
+
+        assert_eq!(state.handle_message(&msg), Err("MISSING_QUORUM_CERTIFICATE"));
+        assert_eq!(state.current_view, 0);
+        let restored = state.view_change_votes.get(&target_view).unwrap();
+        assert_eq!(restored.len(), 2);
+        assert!(!restored.contains_key(&sender_id));
+    }
+
+    #[test]
+    fn wal_recovery_rejects_unauthenticated_vote() {
+        let n = 4;
+        let threshold = 3;
+        let (_secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let wal_path = std::env::temp_dir().join(format!(
+            "sovereign_lattice_pbft_unauthenticated_{}_{}.log",
+            std::process::id(),
+            nonce
+        ));
+        let wal_path = wal_path.to_string_lossy().into_owned();
+
+        {
+            let mut wal = WriteAheadLog::open(&wal_path).unwrap();
+            // The point is canonical, but it is not a signature by sender 0 for this message.
+            wal.append_entry(0, 1, Phase::PrePrepare as u8, 0, &[0x91; 32], &G1Projective::generator())
+                .unwrap();
+        }
+
+        assert!(matches!(
+            PbftState::new_with_wal_path(n, public_keys, master_pk, wal_path.clone()),
+            Err("WAL_REPLAY_ERROR")
+        ));
+        std::fs::remove_file(wal_path).unwrap();
+    }
+
+    #[test]
+    fn view_change_accepts_previous_view_prepared_certificate_and_recovers() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let wal_path = std::env::temp_dir().join(format!(
+            "sovereign_lattice_pbft_prepared_view_change_{}_{}.log",
+            std::process::id(),
+            nonce
+        ));
+        let wal_path = wal_path.to_string_lossy().into_owned();
+
+        let mut state = PbftState::new_with_wal_path(
+            n, public_keys.clone(), master_pk.clone(), wal_path.clone()
+        ).expect("Failed init");
+
+        let prepared_view = 0u64;
+        let target_view = 1u64;
+        let seq = 1u64;
+        let digest = [0x5c; 32];
+
+        let mut pre_prepare_bytes = Vec::new();
+        pre_prepare_bytes.push(Phase::PrePrepare as u8);
+        pre_prepare_bytes.extend_from_slice(&prepared_view.to_be_bytes());
+        pre_prepare_bytes.extend_from_slice(&seq.to_be_bytes());
+        pre_prepare_bytes.extend_from_slice(&digest);
+        let pre_prepare = PbftMessage {
+            phase: Phase::PrePrepare,
+            view: prepared_view,
+            seq,
+            digest,
+            sender_id: 0,
+            signature: sign_bls_message(&pre_prepare_bytes, &secret_keys[&0]),
+        };
+        assert_eq!(state.handle_message(&pre_prepare).unwrap(), "INBOUND_OK_PREPREPARE");
+
+        for sender_id in 0..threshold as u32 {
+            let mut prepare_bytes = Vec::new();
+            prepare_bytes.push(Phase::Prepare as u8);
+            prepare_bytes.extend_from_slice(&prepared_view.to_be_bytes());
+            prepare_bytes.extend_from_slice(&seq.to_be_bytes());
+            prepare_bytes.extend_from_slice(&digest);
+            let prepare = PbftMessage {
+                phase: Phase::Prepare,
+                view: prepared_view,
+                seq,
+                digest,
+                sender_id,
+                signature: sign_bls_message(&prepare_bytes, &secret_keys[&sender_id]),
+            };
+            assert!(state.handle_message(&prepare).is_ok());
+        }
+        assert!(state.prepared_certificates.contains_key(&(prepared_view, seq)));
+
+        for sender_id in 0..threshold as u32 {
+            let mut view_change_bytes = Vec::new();
+            view_change_bytes.push(Phase::ViewChange as u8);
+            view_change_bytes.extend_from_slice(&target_view.to_be_bytes());
+            view_change_bytes.extend_from_slice(&seq.to_be_bytes());
+            view_change_bytes.extend_from_slice(&digest);
+            let view_change = PbftMessage {
+                phase: Phase::ViewChange,
+                view: target_view,
+                seq,
+                digest,
+                sender_id,
+                signature: sign_bls_message(&view_change_bytes, &secret_keys[&sender_id]),
+            };
+            assert!(state.handle_message(&view_change).is_ok());
+        }
+        assert_eq!(state.current_view, target_view);
+        drop(state);
+
+        let recovered = PbftState::new_with_wal_path(
+            n, public_keys, master_pk, wal_path.clone()
+        ).expect("Restart must recover a new-view certificate using the older prepared certificate");
+        assert_eq!(recovered.current_view, target_view);
+        let new_view = recovered.new_view_certificates.get(&target_view)
+            .expect("Recovered new-view certificate");
+        assert!(new_view.selected_prepared_certificate.as_ref().unwrap()
+            .verify(recovered.quorum_size, &recovered.master_public_key));
+        drop(recovered);
+        std::fs::remove_file(wal_path).unwrap();
+    }
+
+    #[test]
+    fn recovery_advances_view_only_after_a_quorum_certificate() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let wal_path = std::env::temp_dir().join(format!(
+            "sovereign_lattice_pbft_view_recovery_{}_{}.log",
+            std::process::id(),
+            nonce
+        ));
+        let wal_path = wal_path.to_string_lossy().into_owned();
+
+        let mut state = PbftState::new_with_wal_path(
+            n, public_keys.clone(), master_pk.clone(), wal_path.clone()
+        ).expect("Failed init");
+        let target_view: u64 = 7;
+        let digest = [0x77; 32];
+
+        let make_vote = |sender_id: u32| {
+            let mut canonical = Vec::new();
+            canonical.push(Phase::ViewChange as u8);
+            canonical.extend_from_slice(&target_view.to_be_bytes());
+            canonical.extend_from_slice(&0u64.to_be_bytes());
+            canonical.extend_from_slice(&digest);
+            PbftMessage {
+                phase: Phase::ViewChange,
+                view: target_view,
+                seq: 0,
+                digest,
+                sender_id,
+                signature: sign_bls_message(&canonical, &secret_keys[&sender_id]),
+            }
+        };
+
+        assert_eq!(state.handle_message(&make_vote(0)).unwrap(), "VOTE_OK_VIEW_CHANGE");
+        drop(state);
+
+        let mut state = PbftState::new_with_wal_path(
+            n, public_keys.clone(), master_pk.clone(), wal_path.clone()
+        ).expect("Failed first restart");
+        assert_eq!(state.current_view, 0);
+        assert_eq!(state.view_change_votes.get(&target_view).unwrap().len(), 1);
+
+        assert_eq!(state.handle_message(&make_vote(1)).unwrap(), "VOTE_OK_VIEW_CHANGE");
+        assert_eq!(state.handle_message(&make_vote(2)).unwrap(), "VIEW_CHANGE_OK");
+        assert_eq!(state.current_view, target_view);
+        drop(state);
+
+        let recovered = PbftState::new_with_wal_path(
+            n, public_keys, master_pk, wal_path.clone()
+        ).expect("Failed quorum-backed restart");
+        assert_eq!(recovered.current_view, target_view);
+        assert!(recovered.new_view_certificates.contains_key(&target_view));
+        drop(recovered);
+        std::fs::remove_file(wal_path).unwrap();
+    }
+
+    #[test]
+    fn recovery_does_not_combine_checkpoint_votes_across_views() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let wal_path = std::env::temp_dir().join(format!(
+            "sovereign_lattice_pbft_checkpoint_views_{}_{}.log",
+            std::process::id(),
+            nonce
+        ));
+        let wal_path = wal_path.to_string_lossy().into_owned();
+        let seq = 5u64;
+        let digest = [0x64; 32];
+
+        {
+            let mut wal = WriteAheadLog::open(&wal_path).unwrap();
+            for (view, sender_id) in [(0u64, 0u32), (0u64, 1u32), (1u64, 2u32)] {
+                let mut canonical = Vec::new();
+                canonical.push(Phase::Checkpoint as u8);
+                canonical.extend_from_slice(&view.to_be_bytes());
+                canonical.extend_from_slice(&seq.to_be_bytes());
+                canonical.extend_from_slice(&digest);
+                let signature = sign_bls_message(&canonical, &secret_keys[&sender_id]);
+                wal.append_entry(view, seq, Phase::Checkpoint as u8, sender_id, &digest, &signature)
+                    .unwrap();
+            }
+        }
+
+        let recovered = PbftState::new_with_wal_path(
+            n, public_keys, master_pk, wal_path.clone()
+        ).expect("Mixed-view checkpoint votes are individually authenticated");
+        assert_eq!(recovered.last_stable_checkpoint, 0);
+        assert_eq!(recovered.checkpoint_votes.len(), 2);
+        drop(recovered);
+        std::fs::remove_file(wal_path).unwrap();
+    }
+
+    #[test]
+    fn test_checkpoint_and_wal_pruning_recovers_stable_checkpoint() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let wal_path = std::env::temp_dir().join(format!(
+            "sovereign_lattice_pbft_checkpoint_{}_{}.log",
+            std::process::id(),
+            nonce
+        ));
+        let wal_path = wal_path.to_string_lossy().into_owned();
+
+        let mut state = PbftState::new_with_wal_path(
+            n,
+            public_keys.clone(),
+            master_pk.clone(),
+            wal_path.clone(),
+        ).expect("Failed init");
 
         let seq_to_checkpoint: u64 = 5;
         let digest = [0x55; 32];
@@ -806,5 +1332,219 @@ mod adversarial_tests {
 
         assert_eq!(state.last_stable_checkpoint, seq_to_checkpoint);
         assert!(state.checkpoint_votes.is_empty());
+        drop(state);
+
+        let recovered = PbftState::new_with_wal_path(
+            n,
+            public_keys,
+            master_pk,
+            wal_path.clone(),
+        ).expect("Failed to recover checkpoint from WAL");
+        assert_eq!(recovered.last_stable_checkpoint, seq_to_checkpoint);
+        drop(recovered);
+        std::fs::remove_file(wal_path).unwrap();
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wal_append_failure_rolls_back_protocol_state() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let wal_path = std::env::temp_dir().join(format!(
+            "sovereign_lattice_pbft_failed_append_{}_{}.log",
+            std::process::id(),
+            nonce
+        ));
+        let wal_path = wal_path.to_string_lossy().into_owned();
+        let mut state = PbftState::new_with_wal_path(
+            n,
+            public_keys,
+            master_pk,
+            wal_path.clone(),
+        ).expect("Failed init with temporary WAL");
+        state.wal.fail_next_append_for_test();
+
+        let view = state.current_view;
+        let leader_id = state.get_expected_leader(view);
+        let seq = state.highest_seq + 1;
+        let digest = [0x6a; 32];
+        let mut canonical = Vec::new();
+        canonical.push(Phase::PrePrepare as u8);
+        canonical.extend_from_slice(&view.to_be_bytes());
+        canonical.extend_from_slice(&seq.to_be_bytes());
+        canonical.extend_from_slice(&digest);
+        let msg = PbftMessage {
+            phase: Phase::PrePrepare,
+            view,
+            seq,
+            digest,
+            sender_id: leader_id,
+            signature: sign_bls_message(&canonical, &secret_keys[&leader_id]),
+        };
+
+        assert_eq!(state.handle_message(&msg), Err("WAL_ERROR"));
+        assert_eq!(state.highest_seq, 0);
+        assert!(!state.pre_prepared_proposals.contains(&(view, seq, digest)));
+        assert!(state.wal_failed);
+        drop(state);
+        std::fs::remove_file(wal_path).unwrap();
+    }
+    #[test]
+    fn prepared_certificate_selection_is_highest_view_and_order_independent() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, _public_keys, master_pk) = generate_test_keys(n, threshold);
+        let seq = 9u64;
+        let digest = [0x7c; 32];
+
+        let make_certificate = |view: u64, signer_ids: &[u32]| {
+            let mut canonical = Vec::new();
+            canonical.push(Phase::Prepare as u8);
+            canonical.extend_from_slice(&view.to_be_bytes());
+            canonical.extend_from_slice(&seq.to_be_bytes());
+            canonical.extend_from_slice(&digest);
+            let signatures = signer_ids
+                .iter()
+                .map(|sender_id| {
+                    (*sender_id, sign_bls_message(&canonical, &secret_keys[sender_id]))
+                })
+                .collect::<HashMap<_, _>>();
+            PreparedCertificate {
+                view,
+                seq,
+                digest,
+                signatures,
+            }
+        };
+
+        let older = make_certificate(0, &[0, 1, 2]);
+        let newer = make_certificate(2, &[0, 1, 2]);
+        // Both certificates are valid for the same (view, sequence, digest);
+        // use the signer list as a stable tie-break for equivalent evidence.
+        let same_view_alternative = make_certificate(2, &[0, 1, 2, 3]);
+
+        let forward = select_highest_prepared_certificate(
+            vec![older.clone(), newer.clone(), same_view_alternative.clone()],
+            3,
+            seq,
+            digest,
+            threshold,
+            &master_pk,
+        )
+        .expect("A valid earlier-view prepared certificate should be selected");
+
+        let reverse = select_highest_prepared_certificate(
+            vec![same_view_alternative, newer, older],
+            3,
+            seq,
+            digest,
+            threshold,
+            &master_pk,
+        )
+        .expect("Selection should not depend on insertion order");
+
+        let signer_ids = |cert: &PreparedCertificate| {
+            let mut ids = cert.signatures.keys().copied().collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids
+        };
+
+        assert_eq!(forward.view, 2, "the highest prepared view must win");
+        assert_eq!(forward.view, reverse.view);
+        assert_eq!(signer_ids(&forward), vec![0, 1, 2]);
+        assert_eq!(
+            signer_ids(&forward),
+            signer_ids(&reverse),
+            "equivalent certificates need a stable tie-break"
+        );
+
+        let before_target = select_highest_prepared_certificate(
+            vec![make_certificate(0, &[0, 1, 2]), make_certificate(2, &[0, 1, 2])],
+            2,
+            seq,
+            digest,
+            threshold,
+            &master_pk,
+        )
+        .expect("A certificate from an earlier view remains eligible");
+        assert_eq!(before_target.view, 0, "a certificate at the target view is not prior evidence");
+    }
+
+    #[test]
+    fn conflicting_digest_at_highest_view_change_sequence_is_rejected() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+
+        let target_view = 1u64;
+        let prepared_view = 0u64;
+        let seq = 5u64;
+        let digest_a = [0xa1; 32];
+        let digest_b = [0xb2; 32];
+
+        let mut prepare_bytes = Vec::new();
+        prepare_bytes.push(Phase::Prepare as u8);
+        prepare_bytes.extend_from_slice(&prepared_view.to_be_bytes());
+        prepare_bytes.extend_from_slice(&seq.to_be_bytes());
+        prepare_bytes.extend_from_slice(&digest_a);
+
+        let prepare_signatures = (0..threshold as u32)
+            .map(|sender_id| (
+                sender_id,
+                sign_bls_message(&prepare_bytes, &secret_keys[&sender_id]),
+            ))
+            .collect::<HashMap<_, _>>();
+        let prepared = PreparedCertificate {
+            view: prepared_view,
+            seq,
+            digest: digest_a,
+            signatures: prepare_signatures,
+        };
+        assert!(prepared.verify(threshold, &master_pk));
+
+        let mut conflicting_votes = HashMap::new();
+        for (sender_id, digest) in [(0u32, digest_a), (1u32, digest_a), (2u32, digest_b)] {
+            let mut canonical = Vec::new();
+            canonical.push(Phase::ViewChange as u8);
+            canonical.extend_from_slice(&target_view.to_be_bytes());
+            canonical.extend_from_slice(&seq.to_be_bytes());
+            canonical.extend_from_slice(&digest);
+            let signature = sign_bls_message(&canonical, &secret_keys[&sender_id]);
+            conflicting_votes.insert(sender_id, (seq, digest, signature));
+        }
+
+        let conflicting = NewViewCertificate {
+            target_view,
+            view_change_votes: conflicting_votes,
+            selected_prepared_certificate: Some(prepared.clone()),
+        };
+        assert!(
+            !conflicting.verify(threshold, &master_pk, &public_keys),
+            "a highest-sequence digest conflict must be rejected deterministically"
+        );
+
+        let mut consistent_votes = HashMap::new();
+        for sender_id in 0..threshold as u32 {
+            let mut canonical = Vec::new();
+            canonical.push(Phase::ViewChange as u8);
+            canonical.extend_from_slice(&target_view.to_be_bytes());
+            canonical.extend_from_slice(&seq.to_be_bytes());
+            canonical.extend_from_slice(&digest_a);
+            let signature = sign_bls_message(&canonical, &secret_keys[&sender_id]);
+            consistent_votes.insert(sender_id, (seq, digest_a, signature));
+        }
+
+        let consistent = NewViewCertificate {
+            target_view,
+            view_change_votes: consistent_votes,
+            selected_prepared_certificate: Some(prepared),
+        };
+        assert!(
+            consistent.verify(threshold, &master_pk, &public_keys),
+            "a valid quorum with one unambiguous highest-sequence digest should pass"
+        );
+    }
+
 }
