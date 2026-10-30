@@ -202,25 +202,45 @@ pub struct NewViewCertificate {
     pub selected_prepared_certificate: Option<PreparedCertificate>,
 }
 
+/// Return an unambiguous highest-sequence statement from a view-change quorum.
+/// Conflicting digests at the highest non-empty sequence must never be resolved by
+/// HashMap iteration order. Sequence zero carries no prepared value, so its digest
+/// is intentionally ignored.
+fn highest_view_change_slot(
+    votes: &HashMap<u32, (u64, [u8; 32], G1Projective)>,
+) -> Option<(u64, [u8; 32])> {
+    let max_seq = votes.values().map(|(seq, _, _)| *seq).max()?;
+
+    if max_seq == 0 {
+        return Some((0, [0u8; 32]));
+    }
+
+    let mut digest_at_max: Option<[u8; 32]> = None;
+    for (seq, digest, _) in votes.values() {
+        if *seq != max_seq {
+            continue;
+        }
+        match digest_at_max {
+            Some(existing) if existing != *digest => return None,
+            None => digest_at_max = Some(*digest),
+            _ => {}
+        }
+    }
+
+    digest_at_max.map(|digest| (max_seq, digest))
+}
+
 impl NewViewCertificate {
     pub fn verify(&self, quorum_size: usize, master_pk: &G2Projective, public_keys: &HashMap<u32, G2Projective>) -> bool {
         if self.view_change_votes.len() < quorum_size {
             return false;
         }
 
-        let max_quorum_seq = self
-            .view_change_votes
-            .values()
-            .map(|&(s, _, _)| s)
-            .max()
-            .unwrap_or(0);
-        
-        let best_digest = self
-            .view_change_votes
-            .values()
-            .find(|&&(s, _, _)| s == max_quorum_seq)
-            .map(|&(_, d, _)| d)
-            .unwrap_or([0u8; 32]);
+        let (max_quorum_seq, best_digest) =
+            match highest_view_change_slot(&self.view_change_votes) {
+                Some(slot) => slot,
+                None => return false,
+            };
 
         if let Some(ref cert) = self.selected_prepared_certificate {
             if !cert.verify(quorum_size, master_pk) {
@@ -761,12 +781,11 @@ impl PbftState {
                 if supporters.len() >= self.quorum_size {
                     self.current_view = msg.view;
 
-                    let max_quorum_seq = supporters.values().map(|&(s, _, _)| s).max().unwrap_or(0);
-                    let best_digest = supporters
-                        .values()
-                        .find(|&&(s, _, _)| s == max_quorum_seq)
-                        .map(|&(_, d, _)| d)
-                        .unwrap_or([0u8; 32]);
+                    let (max_quorum_seq, best_digest) =
+                        match highest_view_change_slot(supporters) {
+                            Some(slot) => slot,
+                            None => return Err("CONFLICTING_VIEW_CHANGE_DIGESTS"),
+                        };
 
                     let bound_cert = if max_quorum_seq > 0 {
                         let cert_opt = self.prepared_certificates.values().find(|c| {
@@ -1326,4 +1345,81 @@ mod adversarial_tests {
         drop(state);
         std::fs::remove_file(wal_path).unwrap();
     }
+    #[test]
+    fn conflicting_digest_at_highest_view_change_sequence_is_rejected() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, public_keys, master_pk) = generate_test_keys(n, threshold);
+
+        let target_view = 1u64;
+        let prepared_view = 0u64;
+        let seq = 5u64;
+        let digest_a = [0xa1; 32];
+        let digest_b = [0xb2; 32];
+
+        let mut prepare_bytes = Vec::new();
+        prepare_bytes.push(Phase::Prepare as u8);
+        prepare_bytes.extend_from_slice(&prepared_view.to_be_bytes());
+        prepare_bytes.extend_from_slice(&seq.to_be_bytes());
+        prepare_bytes.extend_from_slice(&digest_a);
+
+        let prepare_signatures = (0..threshold as u32)
+            .map(|sender_id| {
+                (
+                    sender_id,
+                    sign_bls_message(&prepare_bytes, &secret_keys[&sender_id]),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let prepared = PreparedCertificate {
+            view: prepared_view,
+            seq,
+            digest: digest_a,
+            signatures: prepare_signatures,
+        };
+        assert!(prepared.verify(threshold, &master_pk));
+
+        let mut conflicting_votes = HashMap::new();
+        for (sender_id, digest) in [(0u32, digest_a), (1u32, digest_a), (2u32, digest_b)] {
+            let mut canonical = Vec::new();
+            canonical.push(Phase::ViewChange as u8);
+            canonical.extend_from_slice(&target_view.to_be_bytes());
+            canonical.extend_from_slice(&seq.to_be_bytes());
+            canonical.extend_from_slice(&digest);
+            let signature = sign_bls_message(&canonical, &secret_keys[&sender_id]);
+            conflicting_votes.insert(sender_id, (seq, digest, signature));
+        }
+
+        let conflicting = NewViewCertificate {
+            target_view,
+            view_change_votes: conflicting_votes,
+            selected_prepared_certificate: Some(prepared.clone()),
+        };
+        assert!(
+            !conflicting.verify(threshold, &master_pk, &public_keys),
+            "a highest-sequence digest conflict must be rejected deterministically"
+        );
+
+        let mut consistent_votes = HashMap::new();
+        for sender_id in 0..threshold as u32 {
+            let mut canonical = Vec::new();
+            canonical.push(Phase::ViewChange as u8);
+            canonical.extend_from_slice(&target_view.to_be_bytes());
+            canonical.extend_from_slice(&seq.to_be_bytes());
+            canonical.extend_from_slice(&digest_a);
+            let signature = sign_bls_message(&canonical, &secret_keys[&sender_id]);
+            consistent_votes.insert(sender_id, (seq, digest_a, signature));
+        }
+
+        let consistent = NewViewCertificate {
+            target_view,
+            view_change_votes: consistent_votes,
+            selected_prepared_certificate: Some(prepared),
+        };
+        assert!(
+            consistent.verify(threshold, &master_pk, &public_keys),
+            "a valid quorum with one unambiguous highest-sequence digest should pass"
+        );
+    }
+
 }
