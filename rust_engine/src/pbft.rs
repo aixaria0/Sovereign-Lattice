@@ -230,6 +230,41 @@ fn highest_view_change_slot(
     digest_at_max.map(|digest| (max_seq, digest))
 }
 
+/// Select the highest valid prepared certificate for the value reported by a
+/// view-change quorum. A prepared certificate must come from a view strictly
+/// earlier than the target view. The signer-id tie-break makes the result
+/// independent of HashMap iteration when equivalent certificates exist.
+fn select_highest_prepared_certificate(
+    certificates: impl IntoIterator<Item = PreparedCertificate>,
+    target_view: u64,
+    seq: u64,
+    digest: [u8; 32],
+    quorum_size: usize,
+    master_pk: &G2Projective,
+) -> Option<PreparedCertificate> {
+    let mut candidates = certificates
+        .into_iter()
+        .filter(|cert| {
+            cert.view < target_view
+                && cert.seq == seq
+                && cert.digest == digest
+                && cert.verify(quorum_size, master_pk)
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|a, b| {
+        b.view.cmp(&a.view).then_with(|| {
+            let mut a_signers = a.signatures.keys().copied().collect::<Vec<_>>();
+            let mut b_signers = b.signatures.keys().copied().collect::<Vec<_>>();
+            a_signers.sort_unstable();
+            b_signers.sort_unstable();
+            a_signers.cmp(&b_signers)
+        })
+    });
+
+    candidates.into_iter().next()
+}
+
 impl NewViewCertificate {
     pub fn verify(&self, quorum_size: usize, master_pk: &G2Projective, public_keys: &HashMap<u32, G2Projective>) -> bool {
         if self.view_change_votes.len() < quorum_size {
@@ -246,7 +281,10 @@ impl NewViewCertificate {
             if !cert.verify(quorum_size, master_pk) {
                 return false;
             }
-            if cert.seq != max_quorum_seq || cert.digest != best_digest {
+            if cert.view >= self.target_view
+                || cert.seq != max_quorum_seq
+                || cert.digest != best_digest
+            {
                 return false;
             }
         } else {
@@ -449,7 +487,8 @@ impl PbftState {
                         && !recovered_certificates.values().any(|cert| {
                             // A view-change targets a new view; its prepared
                             // certificate may have been formed in an earlier view.
-                            cert.seq == seq
+                            cert.view < view
+                                && cert.seq == seq
                                 && cert.digest == digest
                                 && cert.verify(quorum_size, &master_public_key)
                         })
@@ -461,20 +500,24 @@ impl PbftState {
                     let supporters = recovered_view_change_votes.entry(view).or_default();
                     supporters.insert(sender_id, (seq, digest, signature));
                     if supporters.len() >= quorum_size {
-                        let max_quorum_seq = supporters.values().map(|&(s, _, _)| s).max().unwrap_or(0);
-                        let best_digest = supporters
-                            .values()
-                            .find(|&&(s, _, _)| s == max_quorum_seq)
-                            .map(|&(_, d, _)| d)
-                            .unwrap_or([0u8; 32]);
+                        let (max_quorum_seq, best_digest) =
+                            match highest_view_change_slot(supporters) {
+                                Some(slot) => slot,
+                                None => {
+                                    recovery_error = true;
+                                    return;
+                                }
+                            };
 
                         let selected_prepared_certificate = if max_quorum_seq > 0 {
-                            match recovered_certificates.values().find(|cert| {
-                                // Bind by the prepared slot/value, not the target view.
-                                cert.seq == max_quorum_seq
-                                    && cert.digest == best_digest
-                                    && cert.verify(quorum_size, &master_public_key)
-                            }).cloned() {
+                            match select_highest_prepared_certificate(
+                                recovered_certificates.values().cloned(),
+                                view,
+                                max_quorum_seq,
+                                best_digest,
+                                quorum_size,
+                                &master_public_key,
+                            ) {
                                 Some(cert) => Some(cert),
                                 None => {
                                     recovery_error = true;
@@ -788,11 +831,14 @@ impl PbftState {
                         };
 
                     let bound_cert = if max_quorum_seq > 0 {
-                        let cert_opt = self.prepared_certificates.values().find(|c| {
-                                c.seq == max_quorum_seq
-                                    && c.digest == best_digest
-                                    && c.verify(self.quorum_size, &self.master_public_key)
-                            }).cloned();
+                        let cert_opt = select_highest_prepared_certificate(
+                            self.prepared_certificates.values().cloned(),
+                            msg.view,
+                            max_quorum_seq,
+                            best_digest,
+                            self.quorum_size,
+                            &self.master_public_key,
+                        );
 
                         if cert_opt.is_none() {
                             return Err("MISSING_QUORUM_CERTIFICATE");
@@ -1345,6 +1391,87 @@ mod adversarial_tests {
         drop(state);
         std::fs::remove_file(wal_path).unwrap();
     }
+    #[test]
+    fn prepared_certificate_selection_is_highest_view_and_order_independent() {
+        let n = 4;
+        let threshold = 3;
+        let (secret_keys, _public_keys, master_pk) = generate_test_keys(n, threshold);
+        let seq = 9u64;
+        let digest = [0x7c; 32];
+
+        let make_certificate = |view: u64, signer_ids: &[u32]| {
+            let mut canonical = Vec::new();
+            canonical.push(Phase::Prepare as u8);
+            canonical.extend_from_slice(&view.to_be_bytes());
+            canonical.extend_from_slice(&seq.to_be_bytes());
+            canonical.extend_from_slice(&digest);
+            let signatures = signer_ids
+                .iter()
+                .map(|sender_id| {
+                    (*sender_id, sign_bls_message(&canonical, &secret_keys[sender_id]))
+                })
+                .collect::<HashMap<_, _>>();
+            PreparedCertificate {
+                view,
+                seq,
+                digest,
+                signatures,
+            }
+        };
+
+        let older = make_certificate(0, &[0, 1, 2]);
+        let newer = make_certificate(2, &[0, 1, 2]);
+        // Both certificates are valid for the same (view, sequence, digest);
+        // use the signer list as a stable tie-break for equivalent evidence.
+        let same_view_alternative = make_certificate(2, &[0, 1, 2, 3]);
+
+        let forward = select_highest_prepared_certificate(
+            vec![older.clone(), newer.clone(), same_view_alternative.clone()],
+            3,
+            seq,
+            digest,
+            threshold,
+            &master_pk,
+        )
+        .expect("A valid earlier-view prepared certificate should be selected");
+
+        let reverse = select_highest_prepared_certificate(
+            vec![same_view_alternative, newer, older],
+            3,
+            seq,
+            digest,
+            threshold,
+            &master_pk,
+        )
+        .expect("Selection should not depend on insertion order");
+
+        let signer_ids = |cert: &PreparedCertificate| {
+            let mut ids = cert.signatures.keys().copied().collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids
+        };
+
+        assert_eq!(forward.view, 2, "the highest prepared view must win");
+        assert_eq!(forward.view, reverse.view);
+        assert_eq!(signer_ids(&forward), vec![0, 1, 2]);
+        assert_eq!(
+            signer_ids(&forward),
+            signer_ids(&reverse),
+            "equivalent certificates need a stable tie-break"
+        );
+
+        let before_target = select_highest_prepared_certificate(
+            vec![make_certificate(0, &[0, 1, 2]), make_certificate(2, &[0, 1, 2])],
+            2,
+            seq,
+            digest,
+            threshold,
+            &master_pk,
+        )
+        .expect("A certificate from an earlier view remains eligible");
+        assert_eq!(before_target.view, 0, "a certificate at the target view is not prior evidence");
+    }
+
     #[test]
     fn conflicting_digest_at_highest_view_change_sequence_is_rejected() {
         let n = 4;
