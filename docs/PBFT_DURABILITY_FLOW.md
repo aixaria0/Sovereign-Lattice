@@ -45,6 +45,8 @@ flowchart TD
 5. **Recovery fails closed.** A truncated record, invalid compressed point, unknown phase, unregistered signer, invalid signature, or inconsistent protocol prerequisite must not be silently accepted.
 6. **A passing workflow is not a proof of crash consistency.** Filesystem-specific crash injection, independent protocol review, and real workload benchmarking remain required.
 
-## Scope and open protocol question
+## Deterministic prepared-certificate selection and remaining protocol question
 
-The current view-change message abstraction carries a target view, sequence, and digest, while a full PBFT view-change proof must also preserve enough information to identify and compare prepared certificates from earlier views. This change rejects conflicting digests at the highest reported sequence, eliminating a nondeterministic selection path. It does not yet settle the full PBFT rule for selecting the highest prepared view when multiple valid certificates exist for the same sequence. That question still needs protocol-level specification and adversarial tests. See issue #6 before treating this implementation as production-ready.
+The live handler and WAL recovery now share the same selection rule: derive the unambiguous highest sequence/digest from the view-change quorum, then choose the valid matching prepared certificate with the greatest source view strictly below the target view. Equivalent certificates at the same view are resolved by sorted signer IDs, so HashMap iteration order cannot change the selected evidence. Conflicting digests at the highest sequence still fail closed.
+
+This is a deterministic implementation rule, not a complete PBFT proof. The current durable PbftMessage/WAL representation still records only target view, sequence, and digest for a view-change vote; it does not encode the source view and full prepared-certificate evidence in each signed view-change statement. A protocol-level format/specification change (including a versioned WAL migration) and adversarial tests are still required. See issue #6 before treating this implementation as production-ready.
