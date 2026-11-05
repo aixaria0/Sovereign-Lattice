@@ -1,14 +1,13 @@
 # 💠 Sovereign Lattice
 
-[![Rust Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg)](#)
-[![Lean 4 Verified](https://img.shields.io/badge/Formal_Verification-Lean_4-blue.svg)](#)
-[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](#)
+[![Rust Build](https://img.shields.io/badge/CI-see_GitHub_Actions-informational)](https://github.com/aixaria0/Sovereign-Lattice/actions)
+
 
 **[Consensus Observatory](https://aixaria0.github.io/Sovereign-Lattice/)** — interactive PBFT, quorum, view-change, and safety visualization.
 
-**Sovereign Lattice** is a high-performance, Byzantine Fault Tolerant (PBFT) consensus engine built in Rust. Designed for deterministic state transitions, it enforces cryptographic integrity via BLS12-381 threshold signatures with selected protocol invariants modeled and checked in Lean 4 alongside Rust implementation tests.
+**Sovereign Lattice** is a research-stage Byzantine Fault Tolerant (BFT/PBFT) consensus implementation in Rust. It combines a protocol state machine, BLS12-381-based message authentication, asynchronous networking, a write-ahead log (WAL), implementation tests, and selected Lean 4 models.
 
-The repository combines explicit protocol invariants, Rust implementation tests, cryptographic checks, asynchronous networking, and state-machine replication.
+The repository is not currently presented as production-ready. A successful build or CI run demonstrates only that the configured checks passed for a particular commit; it does not establish end-to-end protocol safety, crash consistency, liveness, or production performance. See [formal verification coverage](PROOF_COVERAGE.md), the [threat model](THREAT_MODEL.md), and the [protocol specification](SPEC.md) for explicit boundaries.
 
 https://aixaria0.github.io/Sovereign-Lattice/
 
@@ -25,11 +24,11 @@ Source: [`labs/`](labs/).
 
 ## 🏗 Core Architecture
 
-* **Formally Verified Consensus:** Core PBFT state transitions and quorum rules ($N = 3f + 1$) are formally verified using Lean 4.
-* **Cryptographic Engine:** Implements `bls12-381` for constant-time pairing checks, signature aggregation, and malicious forgery rejection.
-* **Asynchronous Transport:** Asynchronous, non-blocking TCP P2P networking powered by `tokio`.
-* **Zero-Panic Parsing:** Network payloads are strictly bound to a 101-byte fixed-size binary parser, eliminating memory exhaustion vectors and deserialization panics.
-* **Crash-Fault Resilience:** Integrated Write-Ahead Log (WAL) ensures atomic state recovery during unexpected node failures.
+* **Protocol model:** Selected quorum and state-machine properties have Lean 4 proofs. The mapping from those abstract properties to every Rust execution path is incomplete.
+* **Cryptography:** The Rust engine uses BLS12-381 primitives for message signatures and certificate checks. Constant-time behavior, key lifecycle, and end-to-end cryptographic composition require independent review.
+* **Transport:** Asynchronous TCP networking is implemented with `tokio`. Peer authentication and transport encryption remain explicit security work, not an assumed feature.
+* **Parsing:** The base PBFT message format is fixed-width (101 bytes); other protocol messages have their own formats and validation paths. This is not a blanket guarantee against resource-exhaustion or parser defects.
+* **Persistence:** WAL append/replay hardening is under review in [PR #5](https://github.com/aixaria0/Sovereign-Lattice/pull/5). It is not yet merged and does not prove complete crash consistency or application-state recovery.
 
 ## ⚙️ Protocol Flow (PBFT)
 1. **Pre-Prepare:** Leader broadcasts a cryptographically bound proposal.
@@ -65,8 +64,7 @@ cargo run --release
 ```
 
 ## 🛡️ Security & Formal Verification
-The unique proposition of Sovereign Lattice is its rigorous approach to safety. The system does not rely solely on unit tests; its core logic is subjected to Lean 4 formal verification.
-Any incoming network payload that violates the established topology, cryptographic bounds, or state sequence is deterministically dropped before it can mutate the state machine.
+Lean 4 currently checks selected abstract invariants, including quorum-intersection properties. Protocol liveness and WAL recovery safety are not formally verified, and the refinement relation between the Lean model and the Rust implementation is incomplete. The transport, operating-system I/O, key management, and cryptographic-library assumptions remain part of the trusted computing base. See [PROOF_COVERAGE.md](PROOF_COVERAGE.md) for the current matrix.
 
 Aixaria, Aria Fani
 
