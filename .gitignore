@@ -1,0 +1,13 @@
+# Rust build output (generated; do not commit)
+/target/
+/rust_engine/target/
+
+# Local node/runtime state
+/rust_engine/node_*.log
+/rust_engine/consensus_wal*.log
+/rust_engine/*.wal
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
